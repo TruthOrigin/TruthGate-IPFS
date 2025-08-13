@@ -16,7 +16,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveWebAssemblyComponents();
 
 // Kestrel (prod)
-builder.WebHost.UseConfiguredKestrel(builder.Configuration, builder.Environment);
+//builder.WebHost.UseConfiguredKestrel(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 
