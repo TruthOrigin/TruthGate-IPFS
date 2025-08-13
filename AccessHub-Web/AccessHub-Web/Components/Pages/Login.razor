@@ -1,0 +1,44 @@
+﻿@page "/login"
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@inject NavigationManager Nav
+
+@code {
+    string? returnUrl;
+    bool showError;
+
+    protected override void OnParametersSet()
+    {
+        var uri = new Uri(Nav.Uri);
+        var q = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        if (q.TryGetValue("returnUrl", out var ru)) returnUrl = ru!;
+        showError = q.ContainsKey("e");
+    }
+}
+
+<div class="max-w-md mx-auto mt-12 p-6 rounded-2xl shadow border">
+    <h2 class="text-xl font-semibold mb-4">Sign in</h2>
+
+    @if (showError)
+    {
+        <div class="mb-3 p-3 rounded bg-red-100 text-red-700">
+            Invalid username or password. Try again.
+        </div>
+    }
+
+    <form method="post" action="/auth/login">
+        <input type="hidden" name="returnUrl" value="@returnUrl" />
+        <div class="mb-3">
+            <label class="block text-sm mb-1">Username</label>
+            <input class="w-full border rounded p-2" name="username" autocomplete="username" />
+        </div>
+        <div class="mb-4">
+            <label class="block text-sm mb-1">Password</label>
+            <input class="w-full border rounded p-2" type="password" name="password" autocomplete="current-password" />
+        </div>
+        <button class="px-4 py-2 rounded bg-black text-white">Sign in</button>
+    </form>
+
+    <div class="mt-4 text-sm text-gray-500">
+        Tip: users & passwords come from <code>appsettings.json</code>.
+    </div>
+</div>
