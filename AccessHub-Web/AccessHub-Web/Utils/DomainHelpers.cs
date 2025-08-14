@@ -1,25 +1,46 @@
 ﻿using Microsoft.Extensions.Options;
+using System.Net;
 using TruthGate_Web.Models;
 
 namespace TruthGate_Web.Utils
 {
     public static class DomainHelpers
     {
-       /* public static string GetEffectiveHost(HttpContext ctx, IWebHostEnvironment env, DomainListOptions opt)
-        {
-            // In Development: ONLY emulate when DevEmulateHost is set. Otherwise, disable domain mapping.
-            if (env.IsDevelopment())
-            {
-                if (!string.IsNullOrWhiteSpace(opt.DevEmulateHost))
-                    return opt.DevEmulateHost!.Trim();
+        /* public static string GetEffectiveHost(HttpContext ctx, IWebHostEnvironment env, DomainListOptions opt)
+         {
+             // In Development: ONLY emulate when DevEmulateHost is set. Otherwise, disable domain mapping.
+             if (env.IsDevelopment())
+             {
+                 if (!string.IsNullOrWhiteSpace(opt.DevEmulateHost))
+                     return opt.DevEmulateHost!.Trim();
 
-                return ""; // <— crucial: treat as "not a mapped domain" in dev unless explicitly emulating
+                 return ""; // <— crucial: treat as "not a mapped domain" in dev unless explicitly emulating
+             }
+
+             // Production: use real host header
+             return ctx.Request.Host.Host ?? "";
+         }*/
+        public static string? GetMappedDomain(HttpContext ctx, IWebHostEnvironment env, DomainListOptions domainsOpt)
+        {
+            var hostToMatch = DomainHelpers.GetEffectiveHost(ctx, env, domainsOpt);
+            if (string.IsNullOrWhiteSpace(hostToMatch))
+            {
+                return null;
             }
 
-            // Production: use real host header
-            return ctx.Request.Host.Host ?? "";
-        }*/
+            if (IPAddress.TryParse(hostToMatch, out _))
+            {
+                return null;
+            }
 
+            var (mfsPath, _) = DomainHelpers.FindBestDomainFolderForHost(hostToMatch, domainsOpt.Domains);
+            if (string.IsNullOrWhiteSpace(mfsPath))
+            {
+                return null;
+            }
+
+            return mfsPath;
+        }
 
         public static string GetEffectiveHost(HttpContext ctx, IWebHostEnvironment env, DomainListOptions opt)
         {

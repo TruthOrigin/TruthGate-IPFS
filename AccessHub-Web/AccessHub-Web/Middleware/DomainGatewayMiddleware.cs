@@ -21,7 +21,7 @@ namespace TruthGate_Web.Middleware
             var domainsOpt = ctx.RequestServices.GetRequiredService<IOptions<DomainListOptions>>().Value;
             var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
 
-            var hostToMatch = DomainHelpers.GetEffectiveHost(ctx, env, domainsOpt);
+            /*var hostToMatch = DomainHelpers.GetEffectiveHost(ctx, env, domainsOpt);
             if (string.IsNullOrWhiteSpace(hostToMatch))
             {
                 await next();
@@ -35,6 +35,13 @@ namespace TruthGate_Web.Middleware
             }
 
             var (mfsPath, _) = DomainHelpers.FindBestDomainFolderForHost(hostToMatch, domainsOpt.Domains);
+            if (string.IsNullOrWhiteSpace(mfsPath))
+            {
+                await next();
+                return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
+            }*/
+
+            var mfsPath = DomainHelpers.GetMappedDomain(ctx, env, domainsOpt);
             if (string.IsNullOrWhiteSpace(mfsPath))
             {
                 await next();
