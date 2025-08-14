@@ -100,8 +100,7 @@ namespace TruthGate_Web.Endpoints
 
 
                 bool isAuthed = context.User?.Identity?.IsAuthenticated ?? false;
-                isAuthed = true;
-
+                
                 if (!isAuthed)
                 {
                     if (string.IsNullOrWhiteSpace(mfsPath))
