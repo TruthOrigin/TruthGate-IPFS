@@ -8,11 +8,20 @@ namespace TruthGate_Web.Endpoints
     {
         public static IEndpointRouteBuilder MapTruthGateIpfsEndpoints(this IEndpointRouteBuilder app)
         {
-            app.Map("/ipfs/{**rest}", async (HttpContext context, string rest,
-                                             IHttpClientFactory clientFactory,
-                                             IOptions<PortOptions> ports,
-                                             IOptions<DomainListOptions> domainsOpt) =>
+            app.Map("/{firstSegment}/{**rest}", async (HttpContext context, string firstSegment, string rest,
+                                            IHttpClientFactory clientFactory,
+                                            IOptions<PortOptions> ports,
+                                            IOptions<DomainListOptions> domainsOpt) =>
             {
+                var segment = firstSegment.ToLowerInvariant();
+
+                if (segment == "ipfs" || segment == "webui")
+                {
+                    // your handler logic here
+                    await context.Response.WriteAsync($"Matched {segment} with rest = {rest}");
+                    return;
+                }
+
                 if (TruthGate_Web.Utils.DomainHelpers.IsMappedDomain(context))
                 {
                     context.Response.StatusCode = StatusCodes.Status404NotFound;
