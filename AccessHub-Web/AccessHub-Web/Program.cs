@@ -4,6 +4,7 @@ using TruthGate_Web.Extensions;
 using TruthGate_Web.Configuration;
 using TruthGate_Web.Middleware;
 using TruthGate_Web.Endpoints;
+using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,6 +20,13 @@ builder.Services.AddRazorComponents()
 //builder.WebHost.UseConfiguredKestrel(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
+
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor |
+                       ForwardedHeaders.XForwardedProto |
+                       ForwardedHeaders.XForwardedHost
+});
 
 // Pipeline
 app.UseStandardErrorPipeline();

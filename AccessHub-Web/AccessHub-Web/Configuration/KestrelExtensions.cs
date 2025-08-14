@@ -2,7 +2,7 @@
 
 namespace TruthGate_Web.Configuration
 {
-   /* public static class KestrelExtensions
+    public static class KestrelExtensions
     {
         public static void UseConfiguredKestrel(this IWebHostBuilder webHost, IConfiguration config, IWebHostEnvironment env)
         {
@@ -25,5 +25,5 @@ namespace TruthGate_Web.Configuration
                 }
             });
         }
-    }*/
+    }
 }

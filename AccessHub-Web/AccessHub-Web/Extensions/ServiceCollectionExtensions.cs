@@ -32,7 +32,7 @@ namespace TruthGate_Web.Extensions
             services.Configure<SecurityOptions>(config);
             services.Configure<PortOptions>(config.GetSection("Ports"));
             services.Configure<DomainListOptions>(config);
-            services.Configure<CertificateOptions>(config.GetSection("Certificate"));
+            //services.Configure<CertificateOptions>(config.GetSection("Certificate"));
 
             // Compression
             services.AddResponseCompression(options =>
