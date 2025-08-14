@@ -251,8 +251,9 @@ namespace TruthGate_Web.Utils
             var method = context.Request.Method;
             var client = clientFactory.CreateClient();
 
+            // Build outbound request
             HttpContent? content = null;
-            if (method != "GET" && method != "HEAD")
+            if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method))
             {
                 content = (context.Request.ContentLength is null or 0)
                     ? new StringContent("")
@@ -264,44 +265,94 @@ namespace TruthGate_Web.Utils
                 Content = content
             };
 
+            // Copy headers, but strip conditionals that trigger 304s (especially for /webui)
+            static bool IsConditionalHeader(string key) =>
+                key.Equals("If-None-Match", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Modified-Since", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Match", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Unmodified-Since", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Range", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("Cache-Control", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("Pragma", StringComparison.OrdinalIgnoreCase);
+
             foreach (var header in context.Request.Headers)
             {
                 if (header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsConditionalHeader(header.Key)) continue;
+
                 if (!forwardRequest.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
                 {
                     forwardRequest.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
                 }
             }
 
-            var responseMessage = await client.SendAsync(
+            // Send
+            using var responseMessage = await client.SendAsync(
                 forwardRequest,
                 HttpCompletionOption.ResponseHeadersRead,
                 context.RequestAborted);
 
+            // Set status
             context.Response.StatusCode = (int)responseMessage.StatusCode;
 
-            // Treat non-success (and explicit 404/410) as a proxy failure signal (caller may invalidate + retry)
-            if (!responseMessage.IsSuccessStatusCode
-                || responseMessage.StatusCode == System.Net.HttpStatusCode.NotFound
-                || responseMessage.StatusCode == System.Net.HttpStatusCode.Gone)
-            {
-                return false;
-            }
-
+            // Copy response headers (rewrite Location if it points to localhost:5001 etc.)
             foreach (var header in responseMessage.Headers)
                 context.Response.Headers[header.Key] = header.Value.ToArray();
             foreach (var header in responseMessage.Content.Headers)
                 context.Response.Headers[header.Key] = header.Value.ToArray();
 
+            // Hop-by-hop headers: remove what can break Kestrel
+            context.Response.Headers.Remove("transfer-encoding");
+            context.Response.Headers.Remove("Connection");
+            context.Response.Headers.Remove("Keep-Alive");
+            context.Response.Headers.Remove("Proxy-Authenticate");
+            context.Response.Headers.Remove("Proxy-Authorization");
+            context.Response.Headers.Remove("TE");
+            context.Response.Headers.Remove("Trailer");
+            context.Response.Headers.Remove("Upgrade");
+
+            // CORS (if desired)
             context.Response.Headers["Access-Control-Allow-Origin"] = "*";
             context.Response.Headers["Access-Control-Allow-Headers"] = "*";
             context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
-            context.Response.Headers.Remove("transfer-encoding");
 
+            // --- Location rewrite ---
+            if (context.Response.Headers.TryGetValue("Location", out var locations) && locations.Count > 0)
+            {
+                // If node redirected to http://127.0.0.1:5001/..., rewrite to our origin with same path+query
+                if (Uri.TryCreate(locations[0], UriKind.Absolute, out var locUri))
+                {
+                    if ((locUri.Host.Equals("127.0.0.1") || locUri.Host.Equals("localhost")) && locUri.IsAbsoluteUri)
+                    {
+                        var builder = new UriBuilder
+                        {
+                            Scheme = context.Request.Scheme,
+                            Host = context.Request.Host.Host,
+                            Port = context.Request.Host.Port ?? -1,
+                            Path = locUri.AbsolutePath,
+                            Query = locUri.Query
+                        };
+                        context.Response.Headers["Location"] = builder.Uri.ToString();
+                    }
+                }
+            }
+
+            // Consider 2xx **and** 3xx responses as "proxy success"
+            var isOk = (int)responseMessage.StatusCode < 400;
+
+            // Never write a body for 304/HEAD
+            if (responseMessage.StatusCode == System.Net.HttpStatusCode.NotModified ||
+                HttpMethods.IsHead(method))
+            {
+                await context.Response.CompleteAsync();
+                return isOk;
+            }
+
+            // Stream body
             await responseMessage.Content.CopyToAsync(context.Response.Body);
-
-            return true;
+            return isOk;
         }
+
     }
 
 }

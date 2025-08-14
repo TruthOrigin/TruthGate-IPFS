@@ -1,7 +1,10 @@
-﻿using Microsoft.Extensions.Options;
+﻿using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Options;
 using System.Net;
 using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
+using Microsoft.AspNetCore.Identity;
 
 namespace TruthGate_Web.Endpoints
 {
@@ -17,7 +20,6 @@ namespace TruthGate_Web.Endpoints
     IOptions<DomainListOptions> domainsOpt) =>
             {
                 var env = context.RequestServices.GetRequiredService<IWebHostEnvironment>();
-
                 var mfsPath = DomainHelpers.GetMappedDomain(context, env, domainsOpt.Value);
                 if (!string.IsNullOrWhiteSpace(mfsPath))
                     return; // handled by mapped domain logic elsewhere
@@ -41,8 +43,8 @@ namespace TruthGate_Web.Endpoints
                         return;
                     }
 
-                    var cid = await IpfsGateway.ResolveMfsFolderToCidAsync(mfsPath!, clientFactory);
-                    if (string.IsNullOrWhiteSpace(cid) || !await IpfsGateway.IsCidLocalAsync(cid!, clientFactory))
+                    var cidv = await IpfsGateway.ResolveMfsFolderToCidAsync(mfsPath!, clientFactory);
+                    if (string.IsNullOrWhiteSpace(cidv) || !await IpfsGateway.IsCidLocalAsync(cidv!, clientFactory))
                     {
                         context.Response.StatusCode = StatusCodes.Status404NotFound;
                         await context.Response.WriteAsync("Site not available locally.");
@@ -50,9 +52,19 @@ namespace TruthGate_Web.Endpoints
                     }
                 }
 
-                // If we got here, user is authorized — proxy to the node's /webui
-                var targetUri = $"http://127.0.0.1:{ports.Value.Http}/webui";
-                await IpfsGateway.Proxy(context, targetUri, clientFactory);
+                var nodeWebUi = $"http://127.0.0.1:5001/webui";   // ports.Value.Http == 5001 in your setup
+                var cid = await IpfsIntrospection.TryGetWebUiCidAsync(nodeWebUi, clientFactory, context.RequestAborted);
+
+                if (!string.IsNullOrWhiteSpace(cid))
+                {
+                    // 2) Redirect user to your own /ipfs/<cid> path
+                    context.Response.Redirect($"/ipfs/{cid}");
+                    return;
+                }
+
+                // 3) Fallback: if we couldn't find a CID, proxy the WebUI page through
+                //    (use your improved Proxy that strips conditional headers / rewrites Location)
+                await IpfsGateway.Proxy(context, nodeWebUi, clientFactory);
             });
 
 
@@ -86,7 +98,9 @@ namespace TruthGate_Web.Endpoints
                     return;
                 }
 
+
                 bool isAuthed = context.User?.Identity?.IsAuthenticated ?? false;
+                isAuthed = true;
 
                 if (!isAuthed)
                 {

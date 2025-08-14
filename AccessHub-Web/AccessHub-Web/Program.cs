@@ -66,13 +66,15 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 // Pipeline
 app.UseStandardErrorPipeline();
 
-// Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
-app.UseDomainGateway();
+
 
 // Auth
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
+
+// Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
+app.UseDomainGateway();
 
 // Force auth for non-mapped domains (your guard)
 app.UseNonMappedDomainAuthGuard();

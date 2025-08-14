@@ -22,8 +22,14 @@ namespace TruthGate_Web.Extensions
                     o.AccessDeniedPath = "/login";
                     o.SlidingExpiration = true;
                     o.ExpireTimeSpan = TimeSpan.FromHours(8);
-                    // keep your optional events commented out
+
+                    o.Cookie.Path = "/";                     // send to /ipfs/*
+                    o.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+                    o.Cookie.SameSite = SameSiteMode.None;    // or None (requires HTTPS) if you ever cross-origin
+                    o.Cookie.HttpOnly = true;
+                    // o.Cookie.Domain = "yourdomain.com";   // only if you truly need it
                 });
+
 
             services.AddAuthorization();
             services.AddCascadingAuthenticationState();
