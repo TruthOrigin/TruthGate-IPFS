@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using System.Net;
 using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
 
@@ -22,6 +23,12 @@ namespace TruthGate_Web.Middleware
 
             var hostToMatch = DomainHelpers.GetEffectiveHost(ctx, env, domainsOpt);
             if (string.IsNullOrWhiteSpace(hostToMatch))
+            {
+                await next();
+                return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
+            }
+
+            if (IPAddress.TryParse(hostToMatch, out _))
             {
                 await next();
                 return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
