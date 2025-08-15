@@ -5,67 +5,11 @@ using TruthGate_Web.Utils;
 
 namespace TruthGate_Web.Endpoints
 {
-    using Microsoft.AspNetCore.Http;
-    using Microsoft.Extensions.DependencyInjection;
-    using System.Linq;
-    using System.Threading.Tasks;
-
     public static class ApiProxyEndpoints
     {
         public static IEndpointRouteBuilder MapTruthGateApiProxyEndpoints(this IEndpointRouteBuilder app)
         {
-            app.Map("/api/{**rest}", async (
-                HttpContext context,
-                string rest,
-                IHttpClientFactory clientFactory,
-                IConfigService configSvc) =>
-            {
-                // 1) Read provided API key (header or query)
-                var provided =
-                    context.Request.Headers["X-API-Key"].FirstOrDefault()
-                    ?? context.Request.Query["api_key"].FirstOrDefault()
-                    ?? context.Request.Query["key"].FirstOrDefault();
-
-                // 2) Load config + validate key against hashed entries
-                var cfg = configSvc.Get();
-                bool keyOk = false;
-
-                if (!string.IsNullOrWhiteSpace(provided) && cfg.ApiKeys is not null && cfg.ApiKeys.Count > 0)
-                {
-                    // Compare input (plain) to stored hash using your hasher
-                    // Any match passes.
-                    keyOk = cfg.ApiKeys.Any(k =>
-                        !string.IsNullOrWhiteSpace(k.KeyHashed) &&
-                        StringHasher.VerifyHash(provided, k.KeyHashed));
-                }
-
-                // 3) If no valid API key, require cookie-authenticated user
-                if (!keyOk)
-                {
-                    bool isAuthed = context.User?.Identity?.IsAuthenticated ?? false;
-                    if (!isAuthed)
-                    {
-                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                        context.Response.Headers["WWW-Authenticate"] = "ApiKey realm=\"/api\"";
-                        await context.Response.CompleteAsync();
-                        return;
-                    }
-                }
-
-                // 4) Disallow API on mapped domains (your original guard)
-                if (TruthGate_Web.Utils.DomainHelpers.IsMappedDomain(context))
-                {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound;
-                    await context.Response.WriteAsync("Not found.");
-                    return;
-                }
-
-                // 5) Proxy through to target
-                var targetUri = RequestHelpers.CombineTarget("api", rest, context);
-                await IpfsGateway.Proxy(context, targetUri, clientFactory);
-            });
-
-            // CORS preflight
+            // CORS preflight first (optional, order usually doesn't matter with explicit MapMethods)
             app.MapMethods("/api/{**rest}", new[] { "OPTIONS" }, async context =>
             {
                 context.Response.StatusCode = StatusCodes.Status204NoContent;
@@ -75,8 +19,53 @@ namespace TruthGate_Web.Endpoints
                 await context.Response.CompleteAsync();
             });
 
+            app.Map("/api/{**rest}", async (HttpContext context, string rest, IHttpClientFactory clientFactory, IConfigService cfgSvc) =>
+            {
+                // 1) Pull plaintext key from header or query
+                var providedKey =
+                    context.Request.Headers["X-API-Key"].FirstOrDefault()
+                    ?? context.Request.Query["api_key"].FirstOrDefault()
+                    ?? context.Request.Query["key"].FirstOrDefault();
+
+                bool keyAccepted = false;
+
+                // 2) Validate against hashed keys in config (if any)
+                var cfg = cfgSvc.Get();
+                var keys = cfg.ApiKeys ?? new List<ApiKey>();
+
+                if (!string.IsNullOrWhiteSpace(providedKey) && keys.Count > 0)
+                {
+                    // Any stored hashed key that verifies wins
+                    keyAccepted = keys.Any(k =>
+                        !string.IsNullOrWhiteSpace(k?.KeyHashed) &&
+                        StringHasher.VerifyHash(providedKey, k.KeyHashed));
+                }
+
+                // 3) If key not accepted, allow cookie-authenticated users
+                bool isAuthed = context.User?.Identity?.IsAuthenticated ?? false;
+
+                if (!keyAccepted && !isAuthed)
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    context.Response.Headers["WWW-Authenticate"] = "ApiKey realm=\"/api\"";
+                    await context.Response.CompleteAsync();
+                    return;
+                }
+
+                // 4) Guard mapped domains
+                if (TruthGate_Web.Utils.DomainHelpers.IsMappedDomain(context))
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await context.Response.WriteAsync("Not found.");
+                    return;
+                }
+
+                // 5) Proxy onward
+                var targetUri = RequestHelpers.CombineTarget("api", rest, context);
+                await IpfsGateway.Proxy(context, targetUri, clientFactory);
+            });
+
             return app;
         }
     }
-
 }
