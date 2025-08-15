@@ -12,19 +12,24 @@ namespace TruthGate_Web.Endpoints
                                             IHttpClientFactory clientFactory,
                                             IOptions<SecurityOptions> opt) =>
             {
-                //var provided =
-                //    context.Request.Headers["X-API-Key"].FirstOrDefault()
-                //    ?? context.Request.Query["api_key"].FirstOrDefault()
-                //    ?? context.Request.Query["key"].FirstOrDefault();
+                var provided =
+                    context.Request.Headers["X-API-Key"].FirstOrDefault()
+                    ?? context.Request.Query["api_key"].FirstOrDefault()
+                    ?? context.Request.Query["key"].FirstOrDefault();
 
-                //if (string.IsNullOrWhiteSpace(provided) ||
-                //    !opt.Value.Keys.Any(k => RequestHelpers.SafeEquals(k, provided)))
-                //{
-                //    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                //    context.Response.Headers["WWW-Authenticate"] = "ApiKey realm=\"/api\"";
-                //    await context.Response.CompleteAsync();
-                //    return;
-                //}
+                if (string.IsNullOrWhiteSpace(provided) ||
+                    !opt.Value.Keys.Any(k => RequestHelpers.SafeEquals(k, provided)))
+                {
+                    bool isAuthed = context.User?.Identity?.IsAuthenticated ?? false;
+
+                    if (!isAuthed)
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        context.Response.Headers["WWW-Authenticate"] = "ApiKey realm=\"/api\"";
+                        await context.Response.CompleteAsync();
+                        return;
+                    }
+                }
 
                 if (TruthGate_Web.Utils.DomainHelpers.IsMappedDomain(context))
                 {
