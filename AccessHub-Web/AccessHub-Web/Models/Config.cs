@@ -2,7 +2,7 @@
 {
     public class Config
     {
-        private const string DefaultAdminHash = "/EUxvODjrpkTKnal6nVEAh2m+52H4OgXGEBLcE3xilcgZ8gbeE5ay/CfzYr9PCJ0";
+        public const string DefaultAdminHash = "/EUxvODjrpkTKnal6nVEAh2m+52H4OgXGEBLcE3xilcgZ8gbeE5ay/CfzYr9PCJ0";
         private List<UserAccount>? _users;
 
         public List<EdgeDomains> Domains { get; set; } = new List<EdgeDomains>();
@@ -49,6 +49,7 @@
 
     public class ApiKey
     {
+        public string Name { get; set; }
         public string KeyHashed { get; set; }
     }
     public class UserAccount

@@ -1,0 +1,190 @@
+﻿@using System.Security.Cryptography
+@using Microsoft.AspNetCore.WebUtilities
+@using TruthGate_Web.Utils
+@inject IJSRuntime JS
+
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form">
+            <MudTextField Label="Key Name"
+                          @bind-Value="_model.Name"
+                          Immediate="true"
+                          Required="true" />
+
+            <MudDivider Class="my-4" />
+
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                <MudButton Variant="Variant.Outlined"
+                           StartIcon="@Icons.Material.Filled.AutoAwesome"
+                           OnClick="Generate">
+                    Generate Key
+                </MudButton>
+                @if (!string.IsNullOrEmpty(_plainKey))
+                {
+                    <MudTooltip Text="Copy to clipboard">
+                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" 
+                        Variant="Variant.Text" OnClick="Copy"/>
+                    </MudTooltip>
+                }
+            </MudStack>
+
+            @if (!string.IsNullOrEmpty(_plainKey))
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" Class="mt-3">
+                    <MudText Typo="Typo.subtitle2" Class="font-semibold">
+                        This key is shown only once and <u>cannot be recovered</u>.
+                    </MudText>
+                    <MudText>Copy and store it securely now.</MudText>
+                </MudAlert>
+
+                <MudTextField Label="Plaintext Key (copy now)"
+                              Value="_plainKey"
+                              ReadOnly="true"
+                              Lines="1"
+                              Adornment="Adornment.End"
+                              AdornmentIcon="@Icons.Material.Filled.Visibility"
+                              Class="mt-3" />
+
+                <MudCheckBox @bind-Value="_model.Acknowledged"
+                             Label="I have securely stored this key and understand it cannot be recovered."
+                             Class="mt-3" />
+            }
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <MudText Color="Color.Error" Class="mt-2">@_error</MudText>
+            }
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="@Cancel" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="@Submit" Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!_canSubmit)">
+            Save
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public List<string>? ExistingNames { get; set; }
+
+    public class AddApiKeyResult
+    {
+        public string Name { get; set; } = "";
+        public string KeyHashed { get; set; } = "";
+    }
+
+    private MudForm? _form;
+    private Model _model = new();
+    private string? _error;
+    private string? _plainKey;
+
+    private bool _canSubmit =>
+        !string.IsNullOrWhiteSpace(_model.Name)
+        && NameIsUnique(_model.Name)
+        && !string.IsNullOrEmpty(_plainKey)
+        && _model.Acknowledged;
+
+    private class Model
+    {
+        public string Name { get; set; } = "";
+        public bool Acknowledged { get; set; } = false;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task Submit()
+    {
+        try
+        {
+            // Manual validation (no MudForm.Validation delegate)
+            var errs = Validate();
+            if (errs is { Count: >0 })
+            {
+                _error = string.Join(" ", errs);
+                StateHasChanged();
+                return;
+            }
+
+            var hashed = StringHasher.HashString(_plainKey!);
+            MudDialog.Close(DialogResult.Ok(new AddApiKeyResult
+            {
+                Name = _model.Name.Trim(),
+                KeyHashed = hashed
+            }));
+        }
+        catch (Exception ex)
+        {
+            _error = $"Unexpected error while saving key: {ex.Message}";
+            StateHasChanged();
+        }
+    }
+
+    private void Generate()
+    {
+        try
+        {
+            _plainKey = GenerateSecureApiKey();
+            _model.Acknowledged = false; // force re-acknowledge on regenerate
+            _error = null;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to generate key: {ex.Message}";
+            _plainKey = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task Copy()
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(_plainKey))
+                await JS.InvokeVoidAsync("navigator.clipboard.writeText", _plainKey);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Clipboard copy failed: {ex.Message}";
+            StateHasChanged();
+        }
+    }
+
+    private List<string> Validate()
+    {
+        var errors = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(_model.Name))
+            errors.Add("A name is required.");
+
+        if (!NameIsUnique(_model.Name))
+            errors.Add("A key with this name already exists.");
+
+        if (string.IsNullOrEmpty(_plainKey))
+            errors.Add("Generate a key first.");
+
+        if (!_model.Acknowledged)
+            errors.Add("You must confirm you have stored the key.");
+
+        return errors;
+    }
+
+    private bool NameIsUnique(string name)
+    {
+        var existing = ExistingNames ?? new List<string>();
+        return !existing.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // 32 random bytes -> Base64Url (padding-free)
+    private static string GenerateSecureApiKey()
+    {
+        using var rng = RandomNumberGenerator.Create();
+        var bytes = new byte[32];
+        rng.GetBytes(bytes);
+        return WebEncoders.Base64UrlEncode(bytes);
+    }
+}

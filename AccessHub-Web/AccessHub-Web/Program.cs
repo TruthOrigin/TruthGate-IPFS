@@ -21,6 +21,8 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents()
     .AddInteractiveWebAssemblyComponents();
 
+builder.Services.AddServerSideBlazor()
+    .AddCircuitOptions(o => o.DetailedErrors = true);
 // Program.cs / Startup
 builder.Services.AddSingleton<IConfigService, ConfigService>();
 builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<IConfigService>());

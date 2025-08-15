@@ -1,0 +1,21 @@
+﻿@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.h6" Class="mb-3">@Message</MudText>
+        <MudText Color="Color.Warning">This action cannot be undone.</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@Cancel" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="@Confirm" Color="Color.Error" Variant="Variant.Filled">Delete</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Message { get; set; } = "Are you sure?";
+
+    private void Cancel() => MudDialog.Cancel();
+    private void Confirm() => MudDialog.Close(DialogResult.Ok(true));
+}

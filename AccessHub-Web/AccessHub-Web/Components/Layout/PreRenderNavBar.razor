@@ -1,28 +1,29 @@
 ﻿@inject ILocalStorageService _LocalStorage
-@rendermode InteractiveWebAssembly
+@rendermode InteractiveServer
 <MudThemeProvider IsDarkMode="_isDarkMode" Theme="@Cache.CustomTheme" />
-<MudPopoverProvider />
 
-@* Needed for dialogs *@
-<MudDialogProvider />
-
-@* Needed for snackbars *@
-<MudSnackbarProvider />
 
 <MudAppBar id="navBar" Elevation="0" Color="Color.Default" Dense="true" Class="px-4">
 
 
     <MudText Typo="Typo.h6" Class="me-auto">
+       
         <MudLink Href="/">
+            <MudStack Row="true">
             @if (_isDarkMode)
             {
-                <MudImage Src="./logo_dark.png" Alt="Logo" Height="38" />
+                <MudImage Src="./logo_dark.png" Alt="Logo" Height="32" />
             }
             else
             {
-                <MudImage Src="./logo_light.png" Alt="Logo" Height="38" />
+                <MudImage Src="./logo_light.png" Alt="Logo" Height="32" />
             }
+            <MudText Typo="Typo.h6" Color="Color.Primary">
+            TruthGate
+            </MudText>
+        </MudStack>
         </MudLink>
+
     </MudText>
 
     <MudHidden Breakpoint="Breakpoint.SmAndDown">
@@ -92,8 +93,8 @@
             </MudMenuItem>
             <MudMenuItem OnClick="LogOut">
 
-                    <MudIcon Icon="@Icons.Material.Filled.Logout" Class="me-2" />
-                    @("Log Out")          
+                <MudIcon Icon="@Icons.Material.Filled.Logout" Class="me-2" />
+                @("Log Out")          
 
             </MudMenuItem>
 
@@ -144,11 +145,15 @@
             new NavLink { Title = "Home", Href = "/" },
             new NavLink { Title = "Web UI", Href = "/webui" },
 
-            // new NavCategory
-            // {
-            //     Title = "Series",
-            //     Children = books
-            // },
+            new NavCategory
+            {
+                Title = "Settings",
+                Children = new List<NavLink>()
+                {
+                    new NavLink { Title = "Users", Href = "/users" },
+                    new NavLink { Title = "API Keys", Href = "/keys" },
+                }
+            },
 
         };
 

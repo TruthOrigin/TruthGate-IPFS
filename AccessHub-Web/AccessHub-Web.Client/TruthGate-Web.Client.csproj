@@ -16,4 +16,8 @@
     <PackageReference Include="MudBlazor" Version="8.11.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Layout\" />
+  </ItemGroup>
+
 </Project>

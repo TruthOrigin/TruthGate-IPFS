@@ -1,13 +1,12 @@
-﻿@using TruthGate_Web.Client.Layout
-@inherits LayoutComponentBase
+﻿@inherits LayoutComponentBase
 @using Microsoft.AspNetCore.Components.Authorization
 
 
 <MudLayout>
     <AuthorizeView>
         <Authorized>
-
             <MudLayout>
+                <BodyAdditionSignalR />
                 <PreRenderNavBar />
                 <MudMainContent id="mainContent" Style="padding-top:48px; padding-bottom:0px;">
 

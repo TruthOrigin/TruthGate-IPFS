@@ -24,7 +24,7 @@ namespace TruthGate_Web.Services
         private const string EnvVarName = "TRUTHGATE_CONFIG_PATH";
 
         private readonly ILogger<ConfigService> _logger;
-        private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.NoRecursion);
+        private readonly SemaphoreSlim _mutex = new(1, 1);
         private readonly JsonSerializerOptions _jsonOptions;
 
         private string _configPath = default!;
@@ -34,9 +34,9 @@ namespace TruthGate_Web.Services
         {
             get
             {
-                _lock.EnterReadLock();
+                _mutex.Wait();
                 try { return _configPath; }
-                finally { _lock.ExitReadLock(); }
+                finally { _mutex.Release(); }
             }
         }
 
@@ -53,11 +53,12 @@ namespace TruthGate_Web.Services
         }
 
         // ---- IHostedService: ensures load happens on app startup ----
-        public Task StartAsync(CancellationToken cancellationToken)
+        public async Task StartAsync(CancellationToken cancellationToken)
         {
-            _lock.EnterWriteLock();
+            await _mutex.WaitAsync(cancellationToken);
             try
             {
+                // Keep same env-var call pattern you used
                 var env = Environment.GetEnvironmentVariable(EnvVarName, EnvironmentVariableTarget.Machine);
                 if (string.IsNullOrWhiteSpace(env))
                 {
@@ -73,7 +74,7 @@ namespace TruthGate_Web.Services
 
                 if (File.Exists(_configPath))
                 {
-                    var json = File.ReadAllText(_configPath);
+                    var json = await File.ReadAllTextAsync(_configPath, cancellationToken);
                     _config = JsonSerializer.Deserialize<Config>(json, _jsonOptions) ?? new Config();
                 }
                 else
@@ -88,10 +89,8 @@ namespace TruthGate_Web.Services
             }
             finally
             {
-                _lock.ExitWriteLock();
+                _mutex.Release();
             }
-
-            return Task.CompletedTask;
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
@@ -104,7 +103,7 @@ namespace TruthGate_Web.Services
 
         public Config Get()
         {
-            _lock.EnterReadLock();
+            _mutex.Wait();
             try
             {
                 // Return a deep copy so external code can’t mutate in-memory state without Save/Update
@@ -113,7 +112,7 @@ namespace TruthGate_Web.Services
             }
             finally
             {
-                _lock.ExitReadLock();
+                _mutex.Release();
             }
         }
 
@@ -121,7 +120,7 @@ namespace TruthGate_Web.Services
         {
             if (newConfig is null) throw new ArgumentNullException(nameof(newConfig));
 
-            _lock.EnterWriteLock();
+            await _mutex.WaitAsync(ct);
             try
             {
                 // normalize via Users getter (ensures admin, trims, etc.)
@@ -134,7 +133,7 @@ namespace TruthGate_Web.Services
             }
             finally
             {
-                _lock.ExitWriteLock();
+                _mutex.Release();
             }
         }
 
@@ -142,7 +141,7 @@ namespace TruthGate_Web.Services
         {
             if (mutator is null) throw new ArgumentNullException(nameof(mutator));
 
-            _lock.EnterWriteLock();
+            await _mutex.WaitAsync(ct);
             try
             {
                 // Work on a copy, then swap in if successful
@@ -159,7 +158,7 @@ namespace TruthGate_Web.Services
             }
             finally
             {
-                _lock.ExitWriteLock();
+                _mutex.Release();
             }
         }
 
@@ -230,4 +229,5 @@ namespace TruthGate_Web.Services
             try { if (File.Exists(p)) File.Delete(p); } catch { /* ignore */ }
         }
     }
+
 }

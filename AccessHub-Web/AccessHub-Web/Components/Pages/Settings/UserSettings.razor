@@ -1,0 +1,166 @@
+﻿@page "/users"
+@using TruthGate_Web.Components.Pages.Settings.Shared
+@using TruthGate_Web.Models
+@using TruthGate_Web.Utils
+@inject IConfigService ConfigSvc
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+
+
+<MudContainer Class="py-3" MaxWidth="MudBlazor.MaxWidth.Medium">
+ 
+        <div class="flex items-center justify-between mb-4">
+            <MudText Typo="Typo.h3">Users</MudText>
+        <br />
+            <MudButton Variant="Variant.Filled" OnClick="AddUser" Color="Color.Primary"
+            StartIcon="@Icons.Material.Filled.PersonAdd">Add User</MudButton>
+        </div>
+
+        @if (IsAdminUsingDefault)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Filled" Class="mb-4">
+                <MudText Typo="Typo.subtitle1" Class="font-semibold">
+                    ⚠️ Critical: The <b>admin</b> account is using the <b>default password hash</b>. Change it immediately.
+                </MudText>
+            </MudAlert>
+        }
+
+        <MudTable Items="_users" Dense="true" Hover="true" Bordered="true">
+            <HeaderContent>
+                <MudTh>User Name</MudTh>
+                <MudTh>Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="User Name">@context.UserName</MudTd>
+                <MudTd>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => ChangePassword(context))" StartIcon="@Icons.Material.Filled.LockReset" Class="mr-2">
+                        Change Password
+                    </MudButton>
+
+                    <MudButton Size="Size.Small"
+                               Variant="Variant.Outlined"
+                               Color="Color.Error"
+                               Disabled="@IsAdmin(context)"
+                               OnClick="@(() => DeleteUser(context))"
+                               StartIcon="@Icons.Material.Filled.DeleteForever">
+                        Delete
+                    </MudButton>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText>No users yet.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+ 
+</MudContainer>
+
+@code
+{
+    private List<UserAccount> _users = new();
+    private bool IsAdminUsingDefault { get; set; }
+
+    protected override void OnInitialized()
+    {
+        LoadFromConfig();
+    }
+
+    private void LoadFromConfig()
+    {
+        var cfg = ConfigSvc.Get();
+        // Work on a local snapshot
+        _users = cfg.Users
+            .OrderBy(u => u.UserName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var admin = _users.FirstOrDefault(u => string.Equals(u.UserName, "admin", StringComparison.OrdinalIgnoreCase));
+        IsAdminUsingDefault = admin != null && string.Equals(admin.PasswordHashed?.Trim(), Config.DefaultAdminHash, StringComparison.Ordinal);
+        StateHasChanged();
+    }
+
+    private bool IsAdmin(UserAccount u) =>
+        string.Equals(u?.UserName, "admin", StringComparison.OrdinalIgnoreCase);
+
+    private async Task AddUser()
+    {
+        var dialog = Dialogs.Show<AddUserDialog>("Add User");
+        var result = await dialog.Result;
+        if (result.Canceled || result.Data is not AddUserDialog.AddUserResult r) return;
+
+        // Validate uniqueness case-insensitively
+        if (_users.Any(u => string.Equals(u.UserName, r.UserName, StringComparison.OrdinalIgnoreCase)))
+        {
+            Snackbar.Add($"User '{r.UserName}' already exists.", Severity.Error);
+            return;
+        }
+
+        // Save through service (atomic + normalized)
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            cfg.Users.Add(new UserAccount
+                {
+                    UserName = r.UserName.Trim().ToLowerInvariant(),
+                    PasswordHashed = StringHasher.HashString(r.Password)
+                });
+        });
+
+        Snackbar.Add($"User '{r.UserName}' added.", Severity.Success);
+        LoadFromConfig();
+    }
+
+    private async Task ChangePassword(UserAccount user)
+    {
+        var parameters = new DialogParameters<ChangePasswordDialog>
+        {
+            { x => x.TargetUserName, user.UserName }
+        };
+
+        var dialog = Dialogs.Show<ChangePasswordDialog>($"Change Password: {user.UserName}", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled || result.Data is not ChangePasswordDialog.ChangePasswordResult r) return;
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var target = cfg.Users.FirstOrDefault(u => string.Equals(u.UserName, user.UserName, StringComparison.OrdinalIgnoreCase));
+            if (target != null)
+            {
+                target.PasswordHashed = StringHasher.HashString(r.NewPassword);
+            }
+        });
+
+        // Special case: if admin changed from default, warning should disappear
+        Snackbar.Add($"Password updated for '{user.UserName}'.", Severity.Success);
+        LoadFromConfig();
+    }
+
+    private async Task DeleteUser(UserAccount user)
+    {
+        if (IsAdmin(user))
+        {
+            Snackbar.Add("The admin account cannot be deleted.", Severity.Warning);
+            return;
+        }
+
+        var parameters = new DialogParameters<ConfirmDeleteDialog>
+        {
+            { x => x.Message, $"Delete user '{user.UserName}'?" }
+        };
+
+        var dialog = Dialogs.Show<ConfirmDeleteDialog>("Confirm Delete", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled || result.Data is not bool confirmed || !confirmed) return;
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var list = cfg.Users;
+            var idx = list.FindIndex(u => string.Equals(u.UserName, user.UserName, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) list.RemoveAt(idx);
+            // Config.Users getter will re-ensure 'admin' exists anyway.
+        });
+
+        Snackbar.Add($"User '{user.UserName}' deleted.", Severity.Success);
+        LoadFromConfig();
+    }
+}
