@@ -59,7 +59,10 @@ namespace TruthGate_Web.Services
             try
             {
                 // Keep same env-var call pattern you used
-                var env = Environment.GetEnvironmentVariable(EnvVarName, EnvironmentVariableTarget.Machine);
+                var env = Environment.GetEnvironmentVariable(EnvVarName)
+          ?? Environment.GetEnvironmentVariable(EnvVarName, EnvironmentVariableTarget.Process) // explicit
+          ?? Environment.GetEnvironmentVariable(EnvVarName, EnvironmentVariableTarget.User)    // works on Windows
+          ?? Environment.GetEnvironmentVariable(EnvVarName, EnvironmentVariableTarget.Machine);//
                 if (string.IsNullOrWhiteSpace(env))
                 {
                     throw new InvalidOperationException(
