@@ -50,7 +50,10 @@ var cert = KestrelExtensions.CreateSelfSignedServerCert(
 // 4) HTTPS-only Kestrel
 builder.WebHost.ConfigureKestrel(k =>
 {
-    k.ListenAnyIP(7176, o => o.UseHttps(cert)); // Only HTTPS
+// HTTPS on 7176
+    k.ListenAnyIP(443, o => o.UseHttps(cert)); // Only HTTPS
+    // HTTP on 8080
+    k.ListenAnyIP(8080); // no HTTPS here
 });
 #endif
 
