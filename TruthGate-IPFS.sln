@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35919.96
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TruthGate-Web", "AccessHub-Web\AccessHub-Web\TruthGate-Web.csproj", "{78B89CF6-D44F-4535-92BA-4123D3EA2D13}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TruthGate-Web", "TruthGate-Web\TruthGate-Web\TruthGate-Web.csproj", "{78B89CF6-D44F-4535-92BA-4123D3EA2D13}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TruthGate-Web.Client", "AccessHub-Web\AccessHub-Web.Client\TruthGate-Web.Client.csproj", "{DF1A3393-CEB7-433F-92CF-A23730901B47}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TruthGate-Web.Client", "TruthGate-Web\TruthGate-Web.Client\TruthGate-Web.Client.csproj", "{DF1A3393-CEB7-433F-92CF-A23730901B47}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
