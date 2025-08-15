@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
 using System.Security.Claims;
+using TruthGate_Web.Services;
 
 namespace TruthGate_Web.Endpoints
 {
@@ -11,27 +12,41 @@ namespace TruthGate_Web.Endpoints
     {
         public static IEndpointRouteBuilder MapTruthGateAuthEndpoints(this IEndpointRouteBuilder app)
         {
-            app.MapPost("/auth/login", async (HttpContext ctx, IOptions<SecurityOptions> opt) =>
+            // POST /auth/login
+            app.MapPost("/auth/login", async (HttpContext ctx, IConfigService configSvc) =>
             {
                 var form = await ctx.Request.ReadFormAsync();
-                var username = form["username"].ToString();
-                var password = form["password"].ToString();
+                var usernameRaw = form["username"].ToString() ?? string.Empty;
+                var password = form["password"].ToString() ?? string.Empty;
                 var returnUrl = form["returnUrl"].ToString();
 
-                var user = opt.Value.Users
-                    .FirstOrDefault(u => string.Equals(u.Username, username, StringComparison.OrdinalIgnoreCase));
+                var username = usernameRaw.Trim();
 
-                if (user is null || !RequestHelpers.SafeEquals(user.Password, password))
+                // Pull snapshot of config from your singleton service
+                var cfg = configSvc.Get();
+
+                // Case-insensitive lookup
+                var user = cfg.Users
+                              .FirstOrDefault(u => string.Equals(u.UserName, username, StringComparison.OrdinalIgnoreCase));
+
+                // Verify password hash (stored is hashed, input is plain)
+                var ok = user != null && StringHasher.VerifyHash(password, user.PasswordHashed);
+
+                if (!ok)
                 {
-                    var to = string.IsNullOrWhiteSpace(returnUrl) ? "/login?e=1" : $"/login?e=1&returnUrl={Uri.EscapeDataString(returnUrl)}";
+                    var to = string.IsNullOrWhiteSpace(returnUrl)
+                        ? "/login?e=1"
+                        : $"/login?e=1&returnUrl={Uri.EscapeDataString(returnUrl)}";
                     return Results.Redirect(to);
                 }
 
-                var claims = new List<Claim> { new Claim(ClaimTypes.Name, user.Username) };
+                var claims = new List<Claim> { new Claim(ClaimTypes.Name, user!.UserName) };
                 var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
                 var principal = new ClaimsPrincipal(identity);
 
-                await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal,
+                await ctx.SignInAsync(
+                    CookieAuthenticationDefaults.AuthenticationScheme,
+                    principal,
                     new AuthenticationProperties
                     {
                         IsPersistent = true,
@@ -47,6 +62,7 @@ namespace TruthGate_Web.Endpoints
             .AllowAnonymous()
             .DisableAntiforgery();
 
+            // POST /auth/logout
             app.MapPost("/auth/logout", async (HttpContext ctx) =>
             {
                 await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);

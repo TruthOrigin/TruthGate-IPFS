@@ -27,7 +27,6 @@ namespace TruthGate_Web.Extensions
                     o.Cookie.SecurePolicy = CookieSecurePolicy.Always;
                     o.Cookie.SameSite = SameSiteMode.None;    // or None (requires HTTPS) if you ever cross-origin
                     o.Cookie.HttpOnly = true;
-                    // o.Cookie.Domain = "yourdomain.com";   // only if you truly need it
                 });
 
 
@@ -35,7 +34,6 @@ namespace TruthGate_Web.Extensions
             services.AddCascadingAuthenticationState();
 
             // Options
-            services.Configure<SecurityOptions>(config);
             services.Configure<PortOptions>(config.GetSection("Ports"));
             services.Configure<DomainListOptions>(config);
             //services.Configure<CertificateOptions>(config.GetSection("Certificate"));
