@@ -26,7 +26,7 @@ namespace TruthGate_Web.Middleware
                     var path = (ctx.Request.Path.Value ?? "").ToLowerInvariant();
 
                     // Always bypass /login and /auth
-                    if (path.StartsWith("/login") || path.StartsWith("/auth") 
+                    if (path.StartsWith("/login") || path.StartsWith("/auth") || path.StartsWith("/api")
                     || path.StartsWith("/_content/mudblazor") || path.StartsWith("/_framework"))
                     {
                         if (ctx.Request.Path.Equals("/login", StringComparison.OrdinalIgnoreCase)
