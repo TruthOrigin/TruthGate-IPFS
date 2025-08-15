@@ -10,6 +10,7 @@ using System.Net;
 using TruthGate_Web.Utils;
 using MudBlazor.Services;
 using Blazored.LocalStorage;
+using TruthGate_Web.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -19,6 +20,10 @@ builder.Services.AddTruthGateCore(builder.Configuration);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents()
     .AddInteractiveWebAssemblyComponents();
+
+// Program.cs / Startup
+builder.Services.AddSingleton<IConfigService, ConfigService>();
+builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<IConfigService>());
 
 builder.Services.AddMudServices();
 builder.Services.AddBlazoredLocalStorage();
