@@ -1,47 +1,71 @@
-﻿using TruthGate_Web.Utils;
+﻿using Microsoft.Extensions.Options;
+using TruthGate_Web.Models;
+using TruthGate_Web.Utils;
 
 namespace TruthGate_Web.Middleware
 {
     public static class NonMappedAuthGuardExtensions
     {
-        // Wraps your UseWhen guard for non-mapped domains
         public static IApplicationBuilder UseNonMappedDomainAuthGuard(this IApplicationBuilder app)
         {
             app.UseWhen(ctx => !DomainHelpers.IsMappedDomain(ctx), secured =>
             {
                 secured.Use(async (ctx, next) =>
                 {
+                    var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
+                    var domainsOpt = ctx.RequestServices.GetRequiredService<IOptions<DomainListOptions>>();
+
+                    // If domain is mapped, always bypass
+                    var mfsPath = DomainHelpers.GetMappedDomain(ctx, env, domainsOpt.Value);
+                    if (!string.IsNullOrWhiteSpace(mfsPath))
+                    {
+                        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                        return;
+                    }
+
                     var path = (ctx.Request.Path.Value ?? "").ToLowerInvariant();
-                    if (path.StartsWith("/ipfs") || path.StartsWith("/api"))
+
+                    // Always bypass /login and /auth
+                    if (path.StartsWith("/login") || path.StartsWith("/auth") 
+                    || path.StartsWith("/_content/mudblazor") || path.StartsWith("/_framework"))
+                    {
+                        if (ctx.Request.Path.Equals("/login", StringComparison.OrdinalIgnoreCase)
+                            && (ctx.User.Identity?.IsAuthenticated ?? false))
+                        {
+                            ctx.Response.Redirect("/");
+                            return;
+                        }
+
+
+                        await next();
+                        return;
+                    }
+
+#if DEBUG
+                    if (path.StartsWith("/.well-known"))
+                    {
+                        await next();
+                        return;
+                    }
+#endif
+
+                    // If it's a file in wwwroot, bypass
+                    if (IsRequestingWwwrootFile(env, path))
                     {
                         await next();
                         return;
                     }
 
-                    if (path.StartsWith("/login")
-                        || path.StartsWith("/auth")
-                        || path.StartsWith("/_framework")
-                        || path.StartsWith("/_content")
-                        || path.StartsWith("/_blazor")
-                        || path.StartsWith("/css")
-                        || path.StartsWith("/js")
-                        || path.StartsWith("/lib")
-                        || path.StartsWith("/images")
-                        || path.StartsWith("/assets")
-                        || path.StartsWith("/fonts")
-                        || path == "/favicon.ico"
-                        || path == "/manifest.webmanifest")
-                    {
-                        await next();
-                        return;
-                    }
+                    
 
+                    // Preflight requests bypass
                     if (HttpMethods.IsOptions(ctx.Request.Method) || HttpMethods.IsHead(ctx.Request.Method))
                     {
                         await next();
                         return;
                     }
 
+                    // Require authentication for everything else
                     var authed = ctx.User?.Identity?.IsAuthenticated ?? false;
                     if (!authed)
                     {
@@ -63,5 +87,20 @@ namespace TruthGate_Web.Middleware
 
             return app;
         }
+
+        private static bool IsRequestingWwwrootFile(IWebHostEnvironment env, string requestPath)
+        {
+            if (string.IsNullOrEmpty(requestPath) || requestPath == "/") return false;
+
+            // Remove query string if present
+            var cleanPath = requestPath.Split('?', '#')[0];
+
+            // Normalize path to file system
+            var filePath = Path.Combine(env.WebRootPath, cleanPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+
+            // Check if file exists in wwwroot
+            return File.Exists(filePath);
+        }
     }
+
 }

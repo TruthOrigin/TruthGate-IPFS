@@ -8,7 +8,8 @@ using Microsoft.AspNetCore.HttpOverrides;
 using System.Runtime.ConstrainedExecution;
 using System.Net;
 using TruthGate_Web.Utils;
-
+using MudBlazor.Services;
+using Blazored.LocalStorage;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -18,6 +19,9 @@ builder.Services.AddTruthGateCore(builder.Configuration);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents()
     .AddInteractiveWebAssemblyComponents();
+
+builder.Services.AddMudServices();
+builder.Services.AddBlazoredLocalStorage();
 
 #if DEBUG
 #else
@@ -67,8 +71,6 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 
 // Pipeline
 app.UseStandardErrorPipeline();
-
-
 
 // Auth
 app.UseAuthentication();

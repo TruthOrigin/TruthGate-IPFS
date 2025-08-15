@@ -1,23 +1,37 @@
-﻿@inherits LayoutComponentBase
+﻿@using TruthGate_Web.Client.Layout
+@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Components.Authorization
 
-<div class="page">
-    <div class="sidebar">
-        <NavMenu />
-    </div>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+<MudLayout>
+    <AuthorizeView>
+        <Authorized>
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
-</div>
+            <MudLayout>
+                <PreRenderNavBar />
+                <MudMainContent id="mainContent" Style="padding-top:48px; padding-bottom:0px;">
+
+                    @Body
+
+                </MudMainContent>
+            </MudLayout>
+
+        </Authorized>
+        <NotAuthorized>
+            @Body <!-- Render the page only, no nav or layout -->
+        </NotAuthorized>
+    </AuthorizeView>
+</MudLayout>
+
 
 <div id="blazor-error-ui" data-nosnippet>
     An unhandled error has occurred.
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+
+@code {
+
+    
+}

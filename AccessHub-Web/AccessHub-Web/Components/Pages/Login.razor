@@ -1,44 +1,147 @@
 ﻿@page "/login"
 @attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@using Microsoft.AspNetCore.WebUtilities
 @inject NavigationManager Nav
+<MudThemeProvider IsDarkMode="true" Theme="@Cache.CustomTheme" />
 
 @code {
-    string? returnUrl;
-    bool showError;
+    private string? returnUrl;
+    private bool showError;
 
     protected override void OnParametersSet()
     {
         var uri = new Uri(Nav.Uri);
-        var q = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        var q = QueryHelpers.ParseQuery(uri.Query);
         if (q.TryGetValue("returnUrl", out var ru)) returnUrl = ru!;
         showError = q.ContainsKey("e");
     }
 }
 
-<div class="max-w-md mx-auto mt-12 p-6 rounded-2xl shadow border">
-    <h2 class="text-xl font-semibold mb-4">Sign in</h2>
+<HeadContent>
+    <meta name="robots" content="noindex, nofollow" />
+</HeadContent>
 
-    @if (showError)
-    {
-        <div class="mb-3 p-3 rounded bg-red-100 text-red-700">
-            Invalid username or password. Try again.
-        </div>
-    }
+<div class="d-flex justify-center align-center" style="min-height:100vh;">
+    <div class="mud-card mud-elevation-8 pa-6" style="width:420px; border-radius:1rem;">
+        <div class="mud-card-content">
 
-    <form method="post" action="/auth/login">
-        <input type="hidden" name="returnUrl" value="@returnUrl" />
-        <div class="mb-3">
-            <label class="block text-sm mb-1">Username</label>
-            <input class="w-full border rounded p-2" name="username" autocomplete="username" />
-        </div>
-        <div class="mb-4">
-            <label class="block text-sm mb-1">Password</label>
-            <input class="w-full border rounded p-2" type="password" name="password" autocomplete="current-password" />
-        </div>
-        <button class="px-4 py-2 rounded bg-black text-white">Sign in</button>
-    </form>
+            <div class="mud-typography mud-typography-h5 mud-primary-text text-center mb-4">Sign in</div>
 
-    <div class="mt-4 text-sm text-gray-500">
-        Tip: users & passwords come from <code>appsettings.json</code>.
+            @if (showError)
+            {
+                <div class="mud-alert mud-alert-filled-error mud-elevation-0 mb-3" role="alert">
+                    <div class="mud-alert-message">Invalid username or password. Try again.</div>
+                </div>
+            }
+
+            <!-- Give the form an id for JS fallback -->
+            <form id="login-form" method="post" action="/auth/login" novalidate>
+                <input type="hidden" name="returnUrl" value="@returnUrl" />
+
+                <!-- Username -->
+                <div class="mud-input-control mud-input-required mud-input-text-with-label mud-input-input-control mb-3">
+                    <div class="mud-input-control-input-container">
+                        <div class="mud-input mud-input-text mud-input-text-with-label mud-input-adorned-end mud-input-underline mud-typography-subtitle1">
+                            <input class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-adorned-end"
+                                   id="login-username"
+                                   type="text"
+                                   name="username"
+                                   inputmode="text"
+                                   maxlength="524288"
+                                   autocomplete="username"
+                                   aria-invalid="false"
+                                   required
+                                   aria-required="true" />
+                            <div class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-adorned-end" style="display:none" tabindex="-1"></div>
+                            <div class="mud-input-adornment mud-input-adornment-end" aria-hidden="true">
+                                <svg class="mud-icon-root mud-icon-default mud-svg-icon mud-icon-size-medium mud-input-adornment-icon" viewBox="0 0 24 24" role="img" tabindex="-1">
+                                    <path d="M0 0h24v24H0z" fill="none"></path>
+                                    <path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                        <label class="mud-input-label mud-input-label-animated mud-input-label-text mud-input-label-inputcontrol" for="login-username">
+                            Username
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Password -->
+                <div class="mud-input-control mud-input-required mud-input-text-with-label mud-input-input-control mb-4">
+                    <div class="mud-input-control-input-container">
+                        <div class="mud-input mud-input-text mud-input-text-with-label mud-input-adorned-end mud-input-underline mud-typography-subtitle1">
+                            <input class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-adorned-end"
+                                   id="login-password"
+                                   type="password"
+                                   name="password"
+                                   inputmode="text"
+                                   maxlength="524288"
+                                   autocomplete="current-password"
+                                   aria-invalid="false"
+                                   required
+                                   aria-required="true" />
+                            <div class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-adorned-end" style="display:none" tabindex="-1"></div>
+                            <div class="mud-input-adornment mud-input-adornment-end" aria-hidden="true">
+                                <svg class="mud-icon-root mud-icon-default mud-svg-icon mud-icon-size-medium mud-input-adornment-icon" viewBox="0 0 24 24" role="img" tabindex="-1">
+                                    <path d="M0 0h24v24H0z" fill="none"></path>
+                                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5C21.27 7.61 17 4.5 12 4.5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 .001 6.001A3 3 0 0 0 12 9z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                        <label class="mud-input-label mud-input-label-animated mud-input-label-text mud-input-label-inputcontrol" for="login-password">
+                            Password
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Hidden submit for Enter-key fallback -->
+                <input type="submit" hidden />
+
+                <!-- Submit button (set as submit!) -->
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           FullWidth="true"
+                           ButtonType="ButtonType.Submit">
+                    Sign In
+                </MudButton>
+            </form>
+
+            <div class="mud-typography mud-typography-caption text-center mt-4" style="opacity:.8">
+                Tip: users &amp; passwords come from <code>appsettings.json</code>.
+            </div>
+
+        </div>
     </div>
 </div>
+
+<script>
+    (function () {
+      // Label shrink behavior
+      function wire(container) {
+        const input = container.querySelector('input.mud-input-slot');
+        const label = container.parentElement.querySelector('.mud-input-label');
+        if (!input || !label) return;
+        const sync = () => {
+          const hasVal = !!(input.value && input.value.trim().length);
+          if (document.activeElement === input || hasVal) label.classList.add('mud-input-label-shrink');
+          else label.classList.remove('mud-input-label-shrink');
+        };
+        ['input','change','keyup','blur','focus'].forEach(evt => input.addEventListener(evt, sync));
+        setTimeout(sync, 0); // handle autofill
+      }
+      document.querySelectorAll('.mud-input-control .mud-input').forEach(wire);
+
+      // Enter-key fallback: submit explicitly if needed
+      const form = document.getElementById('login-form');
+      ['login-username','login-password'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            // Don’t block default; some browsers need explicit submit if no visible submit button
+            form.requestSubmit ? form.requestSubmit() : form.submit();
+          }
+        });
+      });
+    })();
+</script>

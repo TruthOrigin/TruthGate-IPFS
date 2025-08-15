@@ -5,7 +5,7 @@
     </Found>
 </Router>
  *@
-
+@* 
  @using Microsoft.AspNetCore.Components.Authorization
 <CascadingAuthenticationState>
     <Router AppAssembly="@typeof(App).Assembly"
@@ -22,3 +22,49 @@
         </NotFound>
     </Router>
 </CascadingAuthenticationState>
+ *@
+
+
+@using Microsoft.AspNetCore.Components.Authorization
+@inject NavigationManager Nav
+
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(App).Assembly"
+            AdditionalAssemblies="new[] { typeof(TruthGate_Web.Client._Imports).Assembly }">
+        <Found Context="routeData">
+            <!-- Use MainLayout everywhere when authorized, except on /ipfs* -->
+            <AuthorizeRouteView RouteData="@routeData"
+                                DefaultLayout="@DefaultLayoutType">
+                <NotAuthorized>
+                    <RedirectToLogin />
+                </NotAuthorized>
+            </AuthorizeRouteView>
+
+            @if (!IsIpfsRoute)
+            {
+                <!-- Only add focus behavior for non-/ipfs pages -->
+                <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+            }
+        </Found>
+
+        <NotFound>
+            <p class="m-4 text-red-600">Sorry, there’s nothing at this address.</p>
+        </NotFound>
+    </Router>
+</CascadingAuthenticationState>
+
+@code {
+    private bool IsIpfsRoute
+    {
+        get
+        {
+            // Get the app-relative path (no scheme/host), normalize, and test
+            var rel = Nav.ToBaseRelativePath(Nav.Uri) ?? string.Empty;
+            rel = rel.TrimStart('/');
+            return rel.StartsWith("ipfs", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    // When on /ipfs*, remove the default layout by returning null; otherwise use MainLayout
+    private Type? DefaultLayoutType => IsIpfsRoute ? null : typeof(Layout.MainLayout);
+}

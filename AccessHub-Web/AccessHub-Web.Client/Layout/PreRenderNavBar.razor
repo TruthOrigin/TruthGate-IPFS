@@ -1,0 +1,198 @@
+﻿@inject ILocalStorageService _LocalStorage
+@rendermode InteractiveWebAssembly
+<MudThemeProvider IsDarkMode="_isDarkMode" Theme="@Cache.CustomTheme" />
+<MudPopoverProvider />
+
+@* Needed for dialogs *@
+<MudDialogProvider />
+
+@* Needed for snackbars *@
+<MudSnackbarProvider />
+
+<MudAppBar id="navBar" Elevation="0" Color="Color.Default" Dense="true" Class="px-4">
+
+
+    <MudText Typo="Typo.h6" Class="me-auto">
+        <MudLink Href="/">
+            @if (_isDarkMode)
+            {
+                <MudImage Src="./logo_dark.png" Alt="Logo" Height="38" />
+            }
+            else
+            {
+                <MudImage Src="./logo_light.png" Alt="Logo" Height="38" />
+            }
+        </MudLink>
+    </MudText>
+
+    <MudHidden Breakpoint="Breakpoint.SmAndDown">
+        @foreach (var item in NavItems)
+        {
+            if (item is NavLink link)
+            {
+                <MudButton Href="@link.Href" Variant="Variant.Text" Color="Color.Inherit">@link.Title</MudButton>
+            }
+            else if (item is NavCategory cat)
+            {
+                <MudMenu Label="@cat.Title" Color="Color.Inherit" Dense="true">
+                    @foreach (var child in cat.Children)
+                    {
+                        <MudMenuItem Href="@child.Href">@child.Title</MudMenuItem>
+                    }
+                </MudMenu>
+            }
+        }
+        <MudIconButton Icon="@(_isDarkMode ? Icons.Material.Filled.DarkMode : Icons.Material.Filled.LightMode)"
+        OnClick="ToggleDarkMode"
+        Color="Color.Inherit"
+        Class="me-2" />
+
+        <form method="post" action="/auth/logout">
+            <MudButton ButtonType="ButtonType.Submit"
+            Variant="Variant.Filled"
+            Color="Color.Primary"
+            StartIcon="@Icons.Material.Filled.Logout">
+                Log Out
+            </MudButton>
+        </form>
+    </MudHidden>
+
+    <MudHidden Breakpoint="Breakpoint.MdAndUp">
+        <MudMenu Icon="@Icons.Material.Filled.Menu" Color="Color.Primary">
+            @foreach (var item in NavItems)
+            {
+                if (item is NavLink link)
+                {
+                    <MudNavLink Href="@link.Href">@link.Title</MudNavLink>
+                }
+                else if (item is NavCategory cat)
+                {
+                    <MudNavGroup Title="@cat.Title" Expanded="false">
+                        @foreach (var child in cat.Children)
+                        {
+                            <MudNavLink Href="@child.Href">@child.Title</MudNavLink>
+                        }
+                    </MudNavGroup>
+                }
+            }
+
+            <MudDivider />
+
+            <MudMenuItem OnClick="ToggleDarkMode">
+                @if (_isDarkMode)
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.DarkMode" Class="me-2" />
+                    @("Dark Mode")
+                }
+                else
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.LightMode" Class="me-2" />
+                    @("Light Mode")
+                }
+            </MudMenuItem>
+            <MudMenuItem OnClick="LogOut">
+
+                    <MudIcon Icon="@Icons.Material.Filled.Logout" Class="me-2" />
+                    @("Log Out")          
+
+            </MudMenuItem>
+
+        </MudMenu>
+    </MudHidden>
+
+
+</MudAppBar>
+
+
+
+@code {
+
+    [Inject] NavigationManager Nav { get; set; } = default!;
+
+    private async Task LogOut()
+    {
+        try
+        {
+            using var http = new HttpClient { BaseAddress = new Uri(Nav.BaseUri) };
+
+            // If logout endpoint is POST
+            await http.PostAsync("/auth/logout", null);
+
+            // If it’s GET-based instead, use:
+            // await http.GetAsync("/auth/logout");
+
+            Nav.NavigateTo("/login", forceLoad: true);
+        }
+        catch
+        {
+            // Even if request fails, still redirect to login
+            Nav.NavigateTo("/login", forceLoad: true);
+        }
+    }
+
+
+    private bool _isDarkMode { get; set; } = true;
+    private const string ThemeKey = "theme-mode";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await base.OnInitializedAsync();
+
+
+        NavItems = new List<NavEntry>
+        {
+            new NavLink { Title = "Home", Href = "/" },
+            new NavLink { Title = "Web UI", Href = "/wiki" },
+
+            // new NavCategory
+            // {
+            //     Title = "Series",
+            //     Children = books
+            // },
+
+        };
+
+
+    }
+
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if(first)
+        {
+            var storedTheme = await _LocalStorage.GetItemAsync<string>(ThemeKey);
+            _isDarkMode = storedTheme == "dark"; // Defaults to false (light)
+            OnThemeChanged(_isDarkMode);
+        }
+    }
+
+    private async Task ToggleDarkMode()
+    {
+        _isDarkMode = !_isDarkMode;
+        await _LocalStorage.SetItemAsync(ThemeKey, _isDarkMode ? "dark" : "light");
+        OnThemeChanged(_isDarkMode);
+    }
+
+    public abstract class NavEntry
+    {
+        public string Title { get; set; } = string.Empty;
+    }
+
+    public class NavLink : NavEntry
+    {
+        public string Href { get; set; } = string.Empty;
+    }
+
+    public class NavCategory : NavEntry
+    {
+        public List<NavLink> Children { get; set; } = new();
+    }
+
+    private List<NavEntry> NavItems = new();
+
+
+    private void OnThemeChanged(bool isDark)
+    {
+        _isDarkMode = isDark;
+        StateHasChanged();
+    }
+}
