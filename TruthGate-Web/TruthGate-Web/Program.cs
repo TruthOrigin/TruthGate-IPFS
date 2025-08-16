@@ -96,27 +96,46 @@ if (!builder.Environment.IsDevelopment())
 
         options.ListenAnyIP(443, lo =>
         {
-            var sp = options.ApplicationServices;
-            var live = sp.GetRequiredService<LiveCertProvider>();
-
             lo.UseHttps(new HttpsConnectionAdapterOptions
             {
-                ServerCertificateSelector = (ctx, sni) =>
+                ServerCertificateSelector = (ctx, sniRaw) =>
                 {
+                    var live = lo.ApplicationServices.GetRequiredService<LiveCertProvider>();
+                    var fallback = live.GetSelfSigned(); // your existing self-signed
+
+                    var sni = sniRaw?.Trim();
+
+                    // No SNI or IP literal → self-signed
                     if (string.IsNullOrWhiteSpace(sni) || IPAddress.TryParse(sni, out _))
-                        return live.GetSelfSigned();
+                        return fallback;
 
                     var decision = live.DecideForHost(sni);
-                    return decision.Kind switch
+                    switch (decision.Kind)
                     {
-                        SslDecisionKind.SelfSigned => live.GetSelfSigned(),
-                        SslDecisionKind.NoneFailTls => null,                 // UseSSL=false → fail TLS
-                        SslDecisionKind.RealIfPresent => live.TryLoadIssued(sni),
-                        _ => null
-                    };
+                        case SslDecisionKind.SelfSigned:
+                            return fallback; // unknown host → self-signed
+
+                        case SslDecisionKind.NoneFailTls:
+                            return null; // intentional hard fail for UseSSL=false
+
+                        case SslDecisionKind.RealIfPresent:
+                            {
+                                var issued = live.TryLoadIssued(sni);
+                                if (issued is not null) return issued;
+
+                                // kick issuance now, serve self-signed for this handshake
+                                live.QueueIssueIfMissing(sni);
+                                return fallback;
+                            }
+
+                        default:
+                            return fallback;
+                    }
                 }
             });
         });
+
+
     });
 }
 

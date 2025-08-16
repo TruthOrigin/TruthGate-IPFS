@@ -13,10 +13,40 @@ namespace TruthGate_Web.Configuration
         RealIfPresent
     }
 
+
     public readonly record struct SslDecision(SslDecisionKind Kind);
 
     public sealed class LiveCertProvider
     {
+        // inside LiveCertProvider class:
+        private readonly ConcurrentDictionary<string, Task> _inflight = new(StringComparer.OrdinalIgnoreCase);
+
+        public void QueueIssueIfMissing(string host)
+        {
+            // de-dupe concurrent kicks per host
+            _inflight.GetOrAdd(host, h => Task.Run(async () =>
+            {
+                try
+                {
+                    var existing = await _store.LoadAsync(h, CancellationToken.None);
+                    var need = existing is null || IsCloseToExpiry(existing);
+                    if (!need) return;
+
+                    var issued = await _acme.IssueOrRenewAsync(h, CancellationToken.None);
+                    if (issued is not null)
+                        await _store.SaveAsync(h, issued, CancellationToken.None);
+                }
+                catch
+                {
+                    // swallow/log if you have ILogger; the watcher or next hit will retry
+                }
+                finally
+                {
+                    _inflight.TryRemove(h, out _);
+                }
+            }));
+        }
+
         private readonly SelfSignedCertCache _self;
         private readonly ICertificateStore _store;
         private readonly IAcmeIssuer _acme;
