@@ -88,19 +88,51 @@ namespace TruthGate_Web.Middleware
             return app;
         }
 
-        private static bool IsRequestingWwwrootFile(IWebHostEnvironment env, string requestPath)
+        private static string? _resolvedWebRoot; // cache once per process
+
+        public static bool IsRequestingWwwrootFile(IWebHostEnvironment env, string requestPath)
         {
-            if (string.IsNullOrEmpty(requestPath) || requestPath == "/") return false;
+            if (env is null || string.IsNullOrWhiteSpace(requestPath))
+                return false;
 
-            // Remove query string if present
-            var cleanPath = requestPath.Split('?', '#')[0];
+            // Normalize & guard traversal
+            var rel = requestPath.TrimStart('/');
+            if (rel.Contains("..")) return false;
 
-            // Normalize path to file system
-            var filePath = Path.Combine(env.WebRootPath, cleanPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+            // Fast path: use the file provider if present
+            var fp = env.WebRootFileProvider;
+            if (fp != null)
+            {
+                var fi = fp.GetFileInfo(rel);
+                if (fi?.Exists == true) return true;
+            }
 
-            // Check if file exists in wwwroot
-            return File.Exists(filePath);
+            // Resolve web root once and cache
+            if (_resolvedWebRoot == null)
+            {
+                var webRoot = env.WebRootPath;
+                if (string.IsNullOrWhiteSpace(webRoot))
+                {
+                    var baseDir = AppContext.BaseDirectory;
+                    if (!string.IsNullOrEmpty(baseDir))
+                    {
+                        var fallback = System.IO.Path.Combine(baseDir, "wwwroot");
+                        if (Directory.Exists(fallback))
+                            webRoot = fallback;
+                    }
+                }
+
+                _resolvedWebRoot = string.IsNullOrWhiteSpace(webRoot) ? "" : webRoot;
+            }
+
+            if (string.IsNullOrEmpty(_resolvedWebRoot))
+                return false; // we still don't have a webroot—bail safely
+
+            var full = System.IO.Path.Combine(_resolvedWebRoot, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
+            return File.Exists(full);
         }
+
+
     }
 
 }
