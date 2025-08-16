@@ -41,15 +41,6 @@ builder.Services.AddBlazoredLocalStorage();
 #if DEBUG
 #else
 
-var baseDir = AppContext.BaseDirectory;                 // publish folder at runtime
-var webRoot = Path.Combine(baseDir, "wwwroot");
-
-var opts = new WebApplicationOptions
-{
-    ContentRootPath = baseDir,
-    WebRootPath = Directory.Exists(webRoot) ? webRoot : null
-};
-
 // 1) Auto-discover public IPs on this machine
 var discoveredIps = IPHelper.GetPublicInterfaceIPs().Distinct().ToList();
 
