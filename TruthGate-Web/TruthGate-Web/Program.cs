@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authentication.Cookies;
+﻿using Microsoft.AspNetCore.Authentication.Cookies;
 using TruthGate_Web.Components;
 using TruthGate_Web.Extensions;
 using TruthGate_Web.Configuration;
@@ -110,7 +110,7 @@ if (!builder.Environment.IsDevelopment())
                     return decision.Kind switch
                     {
                         SslDecisionKind.SelfSigned => live.GetSelfSigned(),
-                        SslDecisionKind.NoneFailTls => null,                 // UseSSL=false ? fail TLS
+                        SslDecisionKind.NoneFailTls => null,                 // UseSSL=false → fail TLS
                         SslDecisionKind.RealIfPresent => live.TryLoadIssued(sni),
                         _ => null
                     };
@@ -144,12 +144,6 @@ app.UseAntiforgery();
 app.UseBlazorFrameworkFiles();
 app.UseStaticFiles();
 
-if (!builder.Environment.IsDevelopment())
-{
-    app.MapGet("/.well-known/acme-challenge/{token}",
-        (string token, IAcmeChallengeStore store)
-            => Results.Text(store.TryGetContent(token) ?? "", "text/plain"));
-}
 
 // Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
 app.UseDomainGateway();
