@@ -1,4 +1,6 @@
 ﻿using Microsoft.Extensions.Options;
+using System.Net;
+using System.Net.Http;
 using TruthGate_Web.Models;
 using TruthGate_Web.Services;
 using TruthGate_Web.Utils;
@@ -7,6 +9,53 @@ namespace TruthGate_Web.Endpoints
 {
     public static class ApiProxyEndpoints
     {
+        /// <summary>
+        /// Calls your existing IpfsGateway.Proxy just like the HTTP endpoint would,
+        /// but entirely in-process, returning an HttpResponseMessage.
+        /// </summary>
+        public static async Task<HttpResponseMessage> SendProxyApiRequest(
+        string rest,
+        IHttpClientFactory clientFactory)
+        {
+            // fake up an HttpContext the proxy can use
+            var context = new DefaultHttpContext();
+
+            // make sure there’s at least a valid method/scheme so downstream doesn’t choke
+            context.Request.Method = "POST";     // ipfs endpoints usually accept POST
+            context.Request.Scheme = "http";     // adjust if your RequestHelpers cares
+                                                 // context.Request.Host = ... only if your RequestHelpers actually reads it
+
+            // capture response into memory
+            var bodyStream = new MemoryStream();
+            context.Response.Body = bodyStream;
+
+            // run your existing proxy
+            
+            var restNormalized = rest.TrimStart('/');
+            if (restNormalized.StartsWith("api/", StringComparison.OrdinalIgnoreCase))
+                restNormalized = restNormalized.Substring(4);
+
+            var targetUri = RequestHelpers.CombineTarget("api", restNormalized, context);
+            await IpfsGateway.Proxy(context, targetUri, clientFactory);
+
+            // convert HttpContext.Response into HttpResponseMessage
+            bodyStream.Position = 0;
+            var response = new HttpResponseMessage((HttpStatusCode)context.Response.StatusCode)
+            {
+                Content = new StreamContent(new MemoryStream(bodyStream.ToArray()))
+            };
+
+            foreach (var kv in context.Response.Headers)
+            {
+                if (!response.Headers.TryAddWithoutValidation(kv.Key, kv.Value.ToArray()))
+                {
+                    response.Content.Headers.TryAddWithoutValidation(kv.Key, kv.Value.ToArray());
+                }
+            }
+
+            return response;
+        }
+
         public static IEndpointRouteBuilder MapTruthGateApiProxyEndpoints(this IEndpointRouteBuilder app)
         {
             // CORS preflight first (optional, order usually doesn't matter with explicit MapMethods)

@@ -11,6 +11,7 @@ using TruthGate_Web.Utils;
 using MudBlazor.Services;
 using Blazored.LocalStorage;
 using TruthGate_Web.Services;
+using Microsoft.AspNetCore.Components;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -20,6 +21,13 @@ builder.Services.AddTruthGateCore(builder.Configuration);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents()
     .AddInteractiveWebAssemblyComponents();
+
+builder.Services.AddScoped(sp =>
+{
+    var nav = sp.GetRequiredService<NavigationManager>();
+    return new HttpClient { BaseAddress = new Uri(nav.BaseUri) };
+});
+
 
 builder.Services.AddServerSideBlazor()
     .AddCircuitOptions(o => o.DetailedErrors = true);

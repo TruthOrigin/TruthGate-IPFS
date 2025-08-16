@@ -1,12 +1,62 @@
 ﻿@page "/"
-<PageTitle>Home</PageTitle>
+@rendermode InteractiveServer
+@using TruthGate_Web.Models
+@using TruthGate_Web.Utils
+
+<MudContainer Class="py-3" MaxWidth="MudBlazor.MaxWidth.Medium">
+    <MudText Typo="Typo.h3" Align="Align.Center">Dashboard</MudText>
+    <br />
+
+    <MudGrid Justify="Justify.Center">        
+
+        <MudItem xs="6" sm="4" md="3">
+            <DynamicDashboardCard T="VersionResponse"
+                                  Title="IPFS V."
+                                  Endpoint="/api/v0/version"
+                                  AutoRefresh="true"
+                                  RefreshSeconds="3"
+                                  ValueSelector="@(x => (x.Version))" />
+        </MudItem>
+
+        <MudItem xs="6" sm="4" md="3">
+            <DynamicDashboardCard T="PeersResponse"
+                                  Title="Peers"
+                                  Endpoint="/api/v0/swarm/peers"
+                                  AutoRefresh="true"
+                                  RefreshSeconds="3"
+                                  ValueSelector="@(x => ((x?.Peers?.Count) ?? 0).ToString())" />
+
+        </MudItem>
+        <!-- Repo usage (disk) -->
+        <MudItem xs="6" sm="4" md="3">
+            <DynamicDashboardCard T="RepoStatResponse"
+                                  Title="Repo Used"
+                                  Endpoint="/api/v0/stats/repo"
+                                  AutoRefresh="true"
+                                  RefreshSeconds="10"
+                                  ValueTypo="Typo.h5"
+                                  ValueSelector="@(x => {
+                              var used = UiFormat.Bytes(x.RepoSize);
+                              var max  = UiFormat.Bytes(x.StorageMax);
+                              var pct  = UiFormat.Percent(x.RepoSize, x.StorageMax);
+                              return $"{used} / {max} ({pct})";
+                          })" />
+        </MudItem>
+
+        <!-- Bandwidth live -->
+        <MudItem xs="6" sm="4" md="3">
+            <DynamicDashboardCard T="BandwidthStatsResponse"
+                                  Title="Bandwidth"
+                                  Endpoint="/api/v0/stats/bw"
+                                  AutoRefresh="true"
+                                  RefreshSeconds="3"
+                                  ValueTypo="Typo.h5"
+                                  ValueSelector="@(x =>
+                              $"\u2193 {UiFormat.BytesPerSec(x.RateIn)} <br />  \u2191 {UiFormat.BytesPerSec(x.RateOut)}")" />
+        </MudItem>
+    
+    </MudGrid>
+</MudContainer>
 
 
-@* Needed for dialogs *@
-<MudDialogProvider />
 
-@* Needed for snackbars *@
-<MudSnackbarProvider />
-<h1>Hello, world!</h1>
-
-Welcome to your new app.
