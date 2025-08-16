@@ -1,0 +1,92 @@
+﻿@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form" Model="_model" Validation="@Validate">
+            <MudTextField Label="Domain (e.g., example.com)"
+                          @bind-Value="_model.Domain"
+                          Immediate="true"
+                          Required="true"
+                          For="@(()=>_model.Domain)" />
+
+            <div class="mt-3">
+                <div class="mt-3">
+                    <MudSwitch T="bool"
+                               @bind-Value="_model.UseSSL"
+                               Color="Color.Primary"
+                               Label="@(_model.UseSSL ? "Enabled" : "Disabled")"
+                                />
+                </div>
+                <MudText Class="ml-2" Typo="Typo.body2">Use SSL</MudText>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <MudText Color="Color.Error" Class="mt-2">@_error</MudText>
+            }
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="@Cancel" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="@Submit" Color="Color.Primary" Variant="Variant.Filled">
+            @(_isEdit ? "Save" : "Add")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public bool IsEdit { get; set; }
+    [Parameter] public string? InitialDomain { get; set; }
+    [Parameter] public bool InitialUseSSL { get; set; }
+
+    private readonly Model _model = new();
+    private MudForm _form = default!;
+    private string? _error;
+    private bool _isEdit => IsEdit;
+
+    protected override void OnInitialized()
+    {
+        _model.Domain = InitialDomain ?? string.Empty;
+        _model.UseSSL = InitialUseSSL;
+    }
+
+    public sealed class DomainResult
+    {
+        public string Domain { get; set; } = "";
+        public bool UseSSL { get; set; }
+    }
+
+    private sealed class Model
+    {
+        public string Domain { get; set; } = "";
+        public bool UseSSL { get; set; }
+    }
+
+    private IEnumerable<string> Validate()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(_model.Domain))
+            yield return "Domain is required.";
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task Submit()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        var result = new DomainResult
+        {
+            Domain = _model.Domain,   // normalization happens on the page
+            UseSSL = _model.UseSSL
+        };
+
+        MudDialog.Close(DialogResult.Ok(result));
+    }
+}

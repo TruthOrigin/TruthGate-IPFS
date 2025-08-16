@@ -35,7 +35,7 @@ namespace TruthGate_Web.Middleware
 
             var clientFactory = ctx.RequestServices.GetRequiredService<IHttpClientFactory>();
             var cache = ctx.RequestServices.GetRequiredService<IMemoryCache>();
-            var ports = ctx.RequestServices.GetRequiredService<IOptions<PortOptions>>().Value;
+            var ports = new PortOptions() { Http = 9010 };
 
             var ttl = TimeSpan.FromHours(2);
 

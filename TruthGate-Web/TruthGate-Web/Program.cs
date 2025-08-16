@@ -43,7 +43,7 @@ builder.Services.AddMudServices();
 builder.Services.AddBlazoredLocalStorage();
 
 
-if (builder.Environment.IsDevelopment())
+if (!builder.Environment.IsDevelopment())
 {
     // --- 0) Resolve cert storage dir from env (TRUTHGATE_CERT_PATH)
     var certDir = Environment.GetEnvironmentVariable("TRUTHGATE_CERT_PATH");
@@ -157,12 +157,14 @@ app.UseAntiforgery();
 app.UseBlazorFrameworkFiles();
 app.UseStaticFiles();
 
-app.UseFluffySpoonLetsEncrypt();
+if (!builder.Environment.IsDevelopment())
+{
+    app.UseFluffySpoonLetsEncrypt();
 
-app.MapGet("/.well-known/acme-challenge/{token}",
-    (string token, IAcmeChallengeStore store)
-        => Results.Text(store.TryGetContent(token) ?? "", "text/plain"));
-
+    app.MapGet("/.well-known/acme-challenge/{token}",
+        (string token, IAcmeChallengeStore store)
+            => Results.Text(store.TryGetContent(token) ?? "", "text/plain"));
+}
 
 // Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
 app.UseDomainGateway();

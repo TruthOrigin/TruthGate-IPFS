@@ -1,0 +1,252 @@
+﻿@page "/domains"
+@using System.Globalization
+@using System.Text.RegularExpressions
+@using MudBlazor
+@using TruthGate_Web.Components.Pages.Settings.Shared
+@using TruthGate_Web.Models
+@inject IConfigService ConfigSvc
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+
+<MudContainer Class="py-3" MaxWidth="MudBlazor.MaxWidth.Medium">
+    <div class="flex items-center justify-between mb-4">
+        <MudText Typo="Typo.h3">Domains</MudText>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.DomainAdd"
+                   OnClick="AddDomain">
+            Add Domain
+        </MudButton>
+    </div>
+
+    <MudTable Items="_domains" Dense="true" Hover="true" Bordered="true">
+        <HeaderContent>
+            <MudTh>Domain</MudTh>
+            <MudTh>Use SSL</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+
+        <RowTemplate>
+            <MudTd DataLabel="Domain">@context.Domain</MudTd>
+            <MudTd DataLabel="Use SSL">
+                @if (ToBool(context.UseSSL))
+                {
+                    <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Lock">Enabled</MudChip>
+                }
+                else
+                {
+                    <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.LockOpen">Disabled</MudChip>
+                }
+            </MudTd>
+            <MudTd>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           StartIcon="@Icons.Material.Filled.Edit"
+                           Class="mr-2"
+                           OnClick="@(() => EditDomain(context))">
+                    Edit
+                </MudButton>
+
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           Color="Color.Error"
+                           StartIcon="@Icons.Material.Filled.DeleteForever"
+                           OnClick="@(() => DeleteDomain(context))">
+                    Delete
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+
+        <NoRecordsContent>
+            <MudText>No domains yet.</MudText>
+        </NoRecordsContent>
+    </MudTable>
+</MudContainer>
+
+@code
+{
+    private List<EdgeDomain> _domains = new();
+
+    protected override void OnInitialized()
+    {
+        LoadFromConfig();
+    }
+
+    private void LoadFromConfig()
+    {
+        var cfg = ConfigSvc.Get();
+
+        // Create a local copy and sort by domain
+        _domains = (cfg.Domains ?? new List<EdgeDomain>())
+            .Where(d => !string.IsNullOrWhiteSpace(d?.Domain))
+            .OrderBy(d => d.Domain, StringComparer.OrdinalIgnoreCase)
+            .Select(d => new EdgeDomain
+            {
+                Domain = (d.Domain ?? string.Empty).Trim(),
+                UseSSL = (d.UseSSL ?? string.Empty).Trim()
+            })
+            .ToList();
+
+        StateHasChanged();
+    }
+
+    private async Task AddDomain()
+    {
+        var dialog = Dialogs.Show<AddOrEditDomainDialog>("Add Domain");
+        var result = await dialog.Result;
+
+        if (result.Canceled || result.Data is not AddOrEditDomainDialog.DomainResult r) return;
+
+        // Normalize + validate
+        var normalized = NormalizeDomain(r.Domain);
+        if (string.IsNullOrEmpty(normalized))
+        {
+            Snackbar.Add("Please provide a valid domain.", Severity.Error);
+            return;
+        }
+
+        // Uniqueness (case-insensitive)
+        if (_domains.Any(d => string.Equals(d.Domain, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            Snackbar.Add($"Domain '{normalized}' already exists.", Severity.Error);
+            return;
+        }
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            cfg.Domains ??= new List<EdgeDomain>();
+            cfg.Domains.Add(new EdgeDomain
+            {
+                Domain = normalized,
+                UseSSL = r.UseSSL ? "true" : "false"
+            });
+        });
+
+        Snackbar.Add($"Domain '{normalized}' added.", Severity.Success);
+        LoadFromConfig();
+    }
+
+    private async Task EditDomain(EdgeDomain domain)
+    {
+        var parameters = new DialogParameters<AddOrEditDomainDialog>
+        {
+            { x => x.InitialDomain, domain.Domain },
+            { x => x.InitialUseSSL, ToBool(domain.UseSSL) },
+            { x => x.IsEdit, true }
+        };
+
+        var dialog = Dialogs.Show<AddOrEditDomainDialog>($"Edit Domain: {domain.Domain}", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled || result.Data is not AddOrEditDomainDialog.DomainResult r) return;
+
+        var normalized = NormalizeDomain(r.Domain);
+        if (string.IsNullOrEmpty(normalized))
+        {
+            Snackbar.Add("Please provide a valid domain.", Severity.Error);
+            return;
+        }
+
+        // If the name changed, ensure new name isn't taken
+        bool changed = !string.Equals(domain.Domain, normalized, StringComparison.OrdinalIgnoreCase);
+        if (changed && _domains.Any(d => string.Equals(d.Domain, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            Snackbar.Add($"Another domain with the name '{normalized}' already exists.", Severity.Error);
+            return;
+        }
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var list = cfg.Domains ??= new List<EdgeDomain>();
+            var target = list.FirstOrDefault(d => string.Equals(d.Domain, domain.Domain, StringComparison.OrdinalIgnoreCase));
+            if (target is not null)
+            {
+                target.Domain = normalized;
+                target.UseSSL = r.UseSSL ? "true" : "false";
+            }
+        });
+
+        Snackbar.Add($"Domain updated to '{normalized}'.", Severity.Success);
+        LoadFromConfig();
+    }
+
+    private async Task DeleteDomain(EdgeDomain domain)
+    {
+        var parameters = new DialogParameters<ConfirmDeleteDialog>
+        {
+            { x => x.Message, $"Delete domain '{domain.Domain}'?" }
+        };
+
+        var dialog = Dialogs.Show<ConfirmDeleteDialog>("Confirm Delete", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled || result.Data is not bool confirmed || !confirmed) return;
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var list = cfg.Domains ??= new List<EdgeDomain>();
+            var idx = list.FindIndex(d => string.Equals(d.Domain, domain.Domain, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) list.RemoveAt(idx);
+        });
+
+        Snackbar.Add($"Domain '{domain.Domain}' deleted.", Severity.Success);
+        LoadFromConfig();
+    }
+
+    private static bool ToBool(string? value)
+        => bool.TryParse(value?.Trim(), out var b) ? b : false;
+
+    /// <summary>
+    /// Trim, lower, strip scheme/path/port, normalize IDN -> ASCII, remove trailing dot.
+    /// Returns empty string if not a plausible hostname.
+    /// </summary>
+    private static string NormalizeDomain(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+
+        var s = input.Trim();
+
+        // If someone pasted with scheme, try to parse and extract host
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Uri.TryCreate(s, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
+                s = uri.Host;
+        }
+
+        // If there's a slash, take the host-like part before it
+        var slash = s.IndexOf('/');
+        if (slash >= 0) s = s.Substring(0, slash);
+
+        // Drop any surrounding whitespace and lower
+        s = s.Trim().TrimEnd('.').ToLowerInvariant();
+
+        // Strip obvious port if present (e.g., example.com:8443)
+        // (We avoid IPv6 complexity because domains shouldn't be IPv6 literals)
+        var colon = s.IndexOf(':');
+        if (colon >= 0) s = s.Substring(0, colon);
+
+        // Basic allowed chars check (ASCII hostname)
+        if (!Regex.IsMatch(s, @"^[a-z0-9.-]+$")) return string.Empty;
+        if (s.StartsWith("-") || s.EndsWith("-")) return string.Empty;
+        if (s.Contains("..")) return string.Empty;
+
+        // Convert IDN to ASCII (punycode) if devs type unicode
+        try
+        {
+            var idn = new IdnMapping();
+            s = idn.GetAscii(s);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+
+        // Quick sanity: must contain at least one dot and a non-empty label on each side
+        var parts = s.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2 || parts.Any(p => p.Length == 0)) return string.Empty;
+
+        return s;
+    }
+}
