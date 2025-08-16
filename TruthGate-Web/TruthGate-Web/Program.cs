@@ -88,6 +88,10 @@ builder.WebHost.ConfigureKestrel(k =>
 
 var app = builder.Build();
 
+app.Logger.LogInformation("ContentRoot: {cr}", app.Environment.ContentRootPath);
+app.Logger.LogInformation("WebRoot:     {wr}", app.Environment.WebRootPath);
+app.Logger.LogInformation("BaseDir:     {bd}", AppContext.BaseDirectory);
+
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor |
