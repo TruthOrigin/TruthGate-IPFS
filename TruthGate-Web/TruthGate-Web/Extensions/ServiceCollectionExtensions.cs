@@ -35,7 +35,7 @@ namespace TruthGate_Web.Extensions
 
             // Options
             services.Configure<PortOptions>(config.GetSection("Ports"));
-            services.Configure<DomainListOptions>(config);
+            //services.Configure<DomainListOptions>(config);
             //services.Configure<CertificateOptions>(config.GetSection("Certificate"));
 
             // Compression

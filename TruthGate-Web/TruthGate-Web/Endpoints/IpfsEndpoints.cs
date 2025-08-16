@@ -16,11 +16,10 @@ namespace TruthGate_Web.Endpoints
             app.Map("/webui", async (
     HttpContext context,
     IHttpClientFactory clientFactory,
-    IOptions<PortOptions> ports,
-    IOptions<DomainListOptions> domainsOpt) =>
+    IOptions<PortOptions> ports) =>
             {
                 var env = context.RequestServices.GetRequiredService<IWebHostEnvironment>();
-                var mfsPath = DomainHelpers.GetMappedDomain(context, env, domainsOpt.Value);
+                var mfsPath = DomainHelpers.GetMappedDomain(context);
                 if (!string.IsNullOrWhiteSpace(mfsPath))
                     return; // handled by mapped domain logic elsewhere
 
@@ -82,12 +81,11 @@ namespace TruthGate_Web.Endpoints
             app.Map("/ipfs/{**rest}", async (
                 HttpContext context, string rest,
                 IHttpClientFactory clientFactory,
-                IOptions<PortOptions> ports,
-                IOptions<DomainListOptions> domainsOpt) =>
+                IOptions<PortOptions> ports) =>
             {
                 var env = context.RequestServices.GetRequiredService<IWebHostEnvironment>();
 
-                var mfsPath = DomainHelpers.GetMappedDomain(context, env, domainsOpt.Value);
+                var mfsPath = DomainHelpers.GetMappedDomain(context);
                 if (!string.IsNullOrWhiteSpace(mfsPath))
                     return;
 

@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Options;
 using System.Net;
 using TruthGate_Web.Models;
+using TruthGate_Web.Services;
 
 namespace TruthGate_Web.Utils
 {
@@ -20,71 +21,76 @@ namespace TruthGate_Web.Utils
              // Production: use real host header
              return ctx.Request.Host.Host ?? "";
          }*/
-        public static string? GetMappedDomain(HttpContext ctx, IWebHostEnvironment env, DomainListOptions domainsOpt)
+        /// <summary>
+        /// Returns the MFS folder for the mapped domain, or null if the current host is not mapped.
+        /// The folder is built as "/{SitesRootBasePath}/{domain}" (default SitesRootBasePath = "production/sites").
+        /// </summary>
+        public static string? GetMappedDomain(HttpContext ctx)
         {
-            var hostToMatch = DomainHelpers.GetEffectiveHost(ctx, env, domainsOpt);
+            var configSvc = ctx.RequestServices.GetRequiredService<IConfigService>();
+            var configuration = ctx.RequestServices.GetRequiredService<IConfiguration>();
+            var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
+
+            var hostToMatch = GetEffectiveHost(ctx);
             if (string.IsNullOrWhiteSpace(hostToMatch))
-            {
                 return null;
-            }
 
+            // If it's an IP address request, skip mapping
             if (IPAddress.TryParse(hostToMatch, out _))
-            {
                 return null;
-            }
 
-            var (mfsPath, _) = DomainHelpers.FindBestDomainFolderForHost(hostToMatch, domainsOpt.Domains);
-            if (string.IsNullOrWhiteSpace(mfsPath))
-            {
+            var cfg = configSvc.Get();
+            if (cfg?.Domains == null || cfg.Domains.Count == 0)
                 return null;
-            }
 
-            return mfsPath;
+            // Case-insensitive match against EdgeDomain.Domain
+            var match = cfg.Domains.FirstOrDefault(d =>
+                !string.IsNullOrWhiteSpace(d?.Domain) &&
+                string.Equals(d.Domain.Trim(), hostToMatch.Trim(), StringComparison.OrdinalIgnoreCase));
+
+            if (match == null)
+                return null;
+
+            var basePath = (configuration["SitesRootBasePath"] ?? "production/sites").Trim().Trim('/');
+            // MFS path must start with '/'
+            return "/" + basePath + "/" + match.Domain.Trim();
         }
 
-        public static string GetEffectiveHost(HttpContext ctx, IWebHostEnvironment env, DomainListOptions opt)
+        /// <summary>
+        /// Returns the effective host for the current request.
+        /// - In Development, honors appsettings: DevEmulateHost (if present).
+        /// - Also (in Development), allows overrides via ?__host= and X-Dev-Host for convenience.
+        /// - Otherwise, uses Request.Host.Host.
+        /// </summary>
+        public static string GetEffectiveHost(HttpContext ctx)
         {
-            if (env.IsDevelopment() && !string.IsNullOrWhiteSpace(opt.DevEmulateHost))
-                return opt.DevEmulateHost!.Trim();
+            var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
+            var config = ctx.RequestServices.GetRequiredService<IConfiguration>();
 
-            var host = ctx.Request.Host.Host ?? "";
+            string host = ctx.Request.Host.Host ?? string.Empty;
+
             if (env.IsDevelopment())
             {
+                var emulate = (config["DevEmulateHost"] ?? string.Empty).Trim();
+                if (!string.IsNullOrWhiteSpace(emulate))
+                    return emulate;
+
+                // Optional dev-only helpers
                 var qHost = ctx.Request.Query["__host"].FirstOrDefault();
                 var hHost = ctx.Request.Headers["X-Dev-Host"].FirstOrDefault();
                 host = qHost ?? hHost ?? host;
             }
+
             return host;
         }
 
-        public static (string? FolderPath, string? Original) FindBestDomainFolderForHost(
-            string host,
-            IEnumerable<string> configuredDomains)
-        {
-            var h = host.ToLowerInvariant();
-            string? best = null;
 
-            foreach (var entry in configuredDomains)
-            {
-                if (string.IsNullOrWhiteSpace(entry)) continue;
-                var e = entry.Trim().Trim('/').ToLowerInvariant();
-                var lastSeg = e.Contains('/') ? e[(e.LastIndexOf('/') + 1)..] : e;
-                if (!string.Equals(lastSeg, h, StringComparison.Ordinal)) continue;
-                if (best == null || e.Length > best.Length) best = e;
-            }
-
-            if (best == null) return (null, null);
-            return ("/" + best, best);
-        }
-
+        /// <summary>
+        /// True if current request host is mapped to an EdgeDomain in config.
+        /// </summary>
         public static bool IsMappedDomain(HttpContext ctx)
         {
-            var domainsOpt = ctx.RequestServices.GetRequiredService<IOptions<DomainListOptions>>().Value;
-            var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
-            var hostToMatch = GetEffectiveHost(ctx, env, domainsOpt);
-            if (string.IsNullOrWhiteSpace(hostToMatch)) return false;
-            var (mfsPath, _) = FindBestDomainFolderForHost(hostToMatch, domainsOpt.Domains);
-            return !string.IsNullOrWhiteSpace(mfsPath);
+            return !string.IsNullOrWhiteSpace(GetMappedDomain(ctx));
         }
     }
 }

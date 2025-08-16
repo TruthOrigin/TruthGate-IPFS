@@ -13,10 +13,9 @@ namespace TruthGate_Web.Middleware
                 secured.Use(async (ctx, next) =>
                 {
                     var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
-                    var domainsOpt = ctx.RequestServices.GetRequiredService<IOptions<DomainListOptions>>();
 
                     // If domain is mapped, always bypass
-                    var mfsPath = DomainHelpers.GetMappedDomain(ctx, env, domainsOpt.Value);
+                    var mfsPath = DomainHelpers.GetMappedDomain(ctx);
                     if (!string.IsNullOrWhiteSpace(mfsPath))
                     {
                         ctx.Response.StatusCode = StatusCodes.Status404NotFound;

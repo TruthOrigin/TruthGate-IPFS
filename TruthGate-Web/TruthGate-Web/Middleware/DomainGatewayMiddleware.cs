@@ -18,30 +18,7 @@ namespace TruthGate_Web.Middleware
 
         private static async Task<RunOnceResult> RunOnce(HttpContext ctx, Func<Task> next)
         {
-            var domainsOpt = ctx.RequestServices.GetRequiredService<IOptions<DomainListOptions>>().Value;
-            var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
-
-            /*var hostToMatch = DomainHelpers.GetEffectiveHost(ctx, env, domainsOpt);
-            if (string.IsNullOrWhiteSpace(hostToMatch))
-            {
-                await next();
-                return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
-            }
-
-            if (IPAddress.TryParse(hostToMatch, out _))
-            {
-                await next();
-                return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
-            }
-
-            var (mfsPath, _) = DomainHelpers.FindBestDomainFolderForHost(hostToMatch, domainsOpt.Domains);
-            if (string.IsNullOrWhiteSpace(mfsPath))
-            {
-                await next();
-                return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
-            }*/
-
-            var mfsPath = DomainHelpers.GetMappedDomain(ctx, env, domainsOpt);
+            var mfsPath = DomainHelpers.GetMappedDomain(ctx);
             if (string.IsNullOrWhiteSpace(mfsPath))
             {
                 await next();

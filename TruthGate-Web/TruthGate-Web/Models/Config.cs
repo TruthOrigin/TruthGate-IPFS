@@ -5,7 +5,7 @@
         public const string DefaultAdminHash = "/EUxvODjrpkTKnal6nVEAh2m+52H4OgXGEBLcE3xilcgZ8gbeE5ay/CfzYr9PCJ0";
         private List<UserAccount>? _users;
 
-        public List<EdgeDomains> Domains { get; set; } = new List<EdgeDomains>();
+        public List<EdgeDomain> Domains { get; set; } = new List<EdgeDomain>();
         public List<ApiKey> ApiKeys { get; set; } = new List<ApiKey>();
 
         public List<UserAccount> Users
@@ -42,9 +42,10 @@
         }
     }
 
-    public class EdgeDomains
+    public class EdgeDomain
     {
         public string Domain { get; set; }
+        public string UseSSL { get; set; }
     }
 
     public class ApiKey
