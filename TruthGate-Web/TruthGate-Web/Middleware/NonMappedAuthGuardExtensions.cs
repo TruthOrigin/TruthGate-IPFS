@@ -88,50 +88,32 @@ namespace TruthGate_Web.Middleware
             return app;
         }
 
-        private static string? _resolvedWebRoot; // cache once per process
-
         public static bool IsRequestingWwwrootFile(IWebHostEnvironment env, string requestPath)
         {
-            if (env is null || string.IsNullOrWhiteSpace(requestPath))
+            if (env is null || string.IsNullOrEmpty(requestPath))
                 return false;
 
-            // Normalize & guard traversal
-            var rel = requestPath.TrimStart('/');
-            if (rel.Contains("..")) return false;
-
-            // Fast path: use the file provider if present
-            var fp = env.WebRootFileProvider;
-            if (fp != null)
+            // Fallback if WebRootPath is null (can happen under some hosting setups)
+            var webRoot = env?.WebRootPath;
+            if (string.IsNullOrEmpty(webRoot))
             {
-                var fi = fp.GetFileInfo(rel);
-                if (fi?.Exists == true) return true;
+                // AppContext.BaseDirectory points at the publish folder at runtime
+                var fallback = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+                if (Directory.Exists(fallback))
+                    webRoot = fallback;
+                else
+                    return false; // No webroot → treat as not a static file
             }
 
-            // Resolve web root once and cache
-            if (_resolvedWebRoot == null)
-            {
-                var webRoot = env.WebRootPath;
-                if (string.IsNullOrWhiteSpace(webRoot))
-                {
-                    var baseDir = AppContext.BaseDirectory;
-                    if (!string.IsNullOrEmpty(baseDir))
-                    {
-                        var fallback = System.IO.Path.Combine(baseDir, "wwwroot");
-                        if (Directory.Exists(fallback))
-                            webRoot = fallback;
-                    }
-                }
+            // Normalize the request path (/foo -> foo)
+            var relative = requestPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
 
-                _resolvedWebRoot = string.IsNullOrWhiteSpace(webRoot) ? "" : webRoot;
-            }
+            // Prevent path traversal
+            if (relative.Contains("..")) return false;
 
-            if (string.IsNullOrEmpty(_resolvedWebRoot))
-                return false; // we still don't have a webroot—bail safely
-
-            var full = System.IO.Path.Combine(_resolvedWebRoot, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
+            var full = Path.Combine(webRoot, relative);
             return File.Exists(full);
         }
-
 
     }
 

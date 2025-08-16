@@ -92,6 +92,9 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
 
+app.UseBlazorFrameworkFiles();
+app.UseStaticFiles();
+
 // Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
 app.UseDomainGateway();
 
