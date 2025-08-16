@@ -50,25 +50,30 @@ if (!builder.Environment.IsDevelopment())
     Directory.CreateDirectory(certDir);
 
     // --- 1) Build your self-signed fallback (IP/unknown hosts)
-    IReadOnlyList<IPAddress> discoveredIps = Array.Empty<IPAddress>();
+    IReadOnlyList<IPAddress> discoveredIps;
     var ipOverride = Environment.GetEnvironmentVariable("TRUTHGATE_CERT_IPS");
+
     if (!string.IsNullOrWhiteSpace(ipOverride))
     {
-        var parsed = ipOverride.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                               .Select(s => IPAddress.TryParse(s, out var ip) ? ip : null)
-                               .Where(ip => ip is not null)!
-                               .Cast<IPAddress>()
-                               .Distinct()
-                               .ToList();
-        discoveredIps = parsed;
+        discoveredIps = ipOverride
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => IPAddress.TryParse(s, out var ip) ? ip : null)
+            .Where(ip => ip is not null)!
+            .Cast<IPAddress>()
+            .Distinct()
+            .ToList();
+    }
+    else
+    {
+        // Fallback: auto-discover public interface IPs (your helper)
+        discoveredIps = IPHelper.GetPublicInterfaceIPs()
+            .Distinct()
+            .ToList();
     }
 
-    var dnsOverride = Environment.GetEnvironmentVariable("TRUTHGATE_CERT_DNS");
-    var dnsNames = string.IsNullOrWhiteSpace(dnsOverride)
-        ? Array.Empty<string>()
-        : dnsOverride.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-    var selfSignedCert = KestrelExtensions.CreateSelfSignedServerCert(dnsNames, discoveredIps);
+    var selfSignedCert = KestrelExtensions.CreateSelfSignedServerCert(
+        dnsNames: Array.Empty<string>(),
+        ipAddresses: discoveredIps);
 
     // === DI: NO FLUFFYSPOON HERE ===
     builder.Services.AddSingleton<IConfigService, ConfigService>();
