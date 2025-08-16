@@ -12,9 +12,6 @@ using MudBlazor.Services;
 using Blazored.LocalStorage;
 using TruthGate_Web.Services;
 using Microsoft.AspNetCore.Components;
-using Certes.Pkcs;
-using FluffySpoon.AspNet.EncryptWeMust.Certes;
-using FluffySpoon.AspNet.EncryptWeMust;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 var builder = WebApplication.CreateBuilder(args);
 
@@ -45,7 +42,7 @@ builder.Services.AddBlazoredLocalStorage();
 
 if (!builder.Environment.IsDevelopment())
 {
-    // --- 0) Resolve cert storage dir from env (TRUTHGATE_CERT_PATH)
+    // === env & dirs ===
     var certDir = Environment.GetEnvironmentVariable("TRUTHGATE_CERT_PATH");
     if (string.IsNullOrWhiteSpace(certDir))
         certDir = "/opt/truthgate/certs";
@@ -71,66 +68,51 @@ if (!builder.Environment.IsDevelopment())
         ? Array.Empty<string>()
         : dnsOverride.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    var selfSignedCert = KestrelExtensions.CreateSelfSignedServerCert(
-        dnsNames: dnsNames,
-        ipAddresses: discoveredIps);
+    var selfSignedCert = KestrelExtensions.CreateSelfSignedServerCert(dnsNames, discoveredIps);
 
-    // --- 2) Services
+    // === DI: NO FLUFFYSPOON HERE ===
     builder.Services.AddSingleton<IConfigService, ConfigService>();
-
-    builder.Services.AddSingleton<SelfSignedCertCache>(_ => new SelfSignedCertCache(selfSignedCert));
-    builder.Services.AddSingleton<ICertificateStore>(_ => new FileCertStore(certDir));
-
+    builder.Services.AddSingleton(new SelfSignedCertCache(selfSignedCert));
+    builder.Services.AddSingleton<ICertificateStore>(sp => new FileCertStore(certDir));
     builder.Services.AddSingleton<IAcmeChallengeStore, MemoryChallengeStore>();
     builder.Services.AddSingleton<IAcmeIssuer>(sp =>
         new CertesAcmeIssuer(
             sp.GetRequiredService<IAcmeChallengeStore>(),
             useStaging: builder.Environment.IsDevelopment(),
             accountPemPath: Path.Combine(certDir, "account.pem")));
-
     builder.Services.AddSingleton<LiveCertProvider>();
     builder.Services.AddHostedService<ConfigWatchAndIssueService>();
 
-    // --- 3) Kestrel endpoints
+    // === Kestrel ===
     builder.WebHost.ConfigureKestrel(options =>
     {
-        options.ListenAnyIP(80);    // For HTTP-01 (Let’s Encrypt)
-        options.ListenAnyIP(8080);  // Optional plain HTTP
+        options.ListenAnyIP(80);   // ACME HTTP-01
+        options.ListenAnyIP(8080); // optional HTTP
 
-        // TLS 443 with per-SNI selection (sync)
-        options.ListenAnyIP(443, listenOpts =>
+        options.ListenAnyIP(443, lo =>
         {
             var sp = options.ApplicationServices;
             var live = sp.GetRequiredService<LiveCertProvider>();
 
-            listenOpts.UseHttps(new HttpsConnectionAdapterOptions
+            lo.UseHttps(new HttpsConnectionAdapterOptions
             {
-                ServerCertificateSelector = (connectionContext, sni) =>
+                ServerCertificateSelector = (ctx, sni) =>
                 {
-                    // 1) IP/No SNI -> self-signed fallback
                     if (string.IsNullOrWhiteSpace(sni) || IPAddress.TryParse(sni, out _))
                         return live.GetSelfSigned();
 
-                    // 2) Decide based on config
                     var decision = live.DecideForHost(sni);
-                    switch (decision.Kind)
+                    return decision.Kind switch
                     {
-                        case SslDecisionKind.SelfSigned:
-                            return live.GetSelfSigned();
-
-                        case SslDecisionKind.NoneFailTls:    // UseSSL=false => no cert => handshake fails
-                            return null;
-
-                        case SslDecisionKind.RealIfPresent:  // UseSSL=true => use real cert if we already have it
-                            return live.TryLoadIssued(sni);
-                    }
-
-                    return null;
+                        SslDecisionKind.SelfSigned => live.GetSelfSigned(),
+                        SslDecisionKind.NoneFailTls => null,                 // UseSSL=false ? fail TLS
+                        SslDecisionKind.RealIfPresent => live.TryLoadIssued(sni),
+                        _ => null
+                    };
                 }
             });
         });
     });
-
 }
 
 var app = builder.Build();
@@ -159,8 +141,6 @@ app.UseStaticFiles();
 
 if (!builder.Environment.IsDevelopment())
 {
-    app.UseFluffySpoonLetsEncrypt();
-
     app.MapGet("/.well-known/acme-challenge/{token}",
         (string token, IAcmeChallengeStore store)
             => Results.Text(store.TryGetContent(token) ?? "", "text/plain"));
