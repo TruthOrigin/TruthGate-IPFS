@@ -40,16 +40,15 @@ builder.Services.AddBlazoredLocalStorage();
 
 #if DEBUG
 #else
-var baseDir = AppContext.BaseDirectory;
-builder.WebHost.UseContentRoot(baseDir);
 
-// If wwwroot exists under publish folder, make it the WebRoot
+var baseDir = AppContext.BaseDirectory;                 // publish folder at runtime
 var webRoot = Path.Combine(baseDir, "wwwroot");
-if (Directory.Exists(webRoot))
-{
-    builder.WebHost.UseWebRoot(webRoot);
-}
 
+var opts = new WebApplicationOptions
+{
+    ContentRootPath = baseDir,
+    WebRootPath = Directory.Exists(webRoot) ? webRoot : null
+};
 
 // 1) Auto-discover public IPs on this machine
 var discoveredIps = IPHelper.GetPublicInterfaceIPs().Distinct().ToList();
