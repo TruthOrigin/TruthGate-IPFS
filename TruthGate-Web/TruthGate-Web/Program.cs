@@ -137,6 +137,9 @@ if (!builder.Environment.IsDevelopment())
 
 
     });
+
+
+    builder.Services.AddHostedService<EagerIssueAtStartup>();
 }
 
 var app = builder.Build();
