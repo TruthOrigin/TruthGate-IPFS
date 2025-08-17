@@ -115,12 +115,29 @@ namespace TruthGate_Web.Configuration
                     _challengeStore.Remove(http.Token);
                 }
 
+                // === Finalize & download without issuer lookup surprises ===
                 var acctKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
 
-                // If your Certes version supports preferredChain, pass it; otherwise this overload still works.
-                var chain = await order.Generate(new CsrInfo { CommonName = host }, acctKey);
+                CertificateChain chain;
+                try
+                {
+                    // Try the simple path first (no preferredChain to avoid staging quirks)
+                    chain = await order.Generate(new CsrInfo { CommonName = host }, acctKey);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "ACME[{Dir}] Generate failed; trying Finalize+Download path",
+                        _isStaging ? "staging" : "prod");
 
-                // 1) Split concatenated PEM (leaf first, then intermediates)
+                    // Older Certes or staging weirdness: finalize explicitly, then download
+                    await order.Finalize(new CsrInfo { CommonName = host }, acctKey);
+                    chain = await order.Download();
+                }
+
+                // IMPORTANT: use parameterless ToPem() so Certes does NOT try to resolve issuers itself
+                var pemChain = chain.ToPem();
+
+                // --- Build the PFX yourself with .NET PKCS APIs (no obsolete constructors) ---
                 static IEnumerable<string> SplitPemCerts(string pemAll)
                 {
                     const string begin = "-----BEGIN CERTIFICATE-----";
@@ -138,7 +155,6 @@ namespace TruthGate_Web.Configuration
                     }
                 }
 
-                var pemChain = chain.ToPem();
                 var certPemList = SplitPemCerts(pemChain).ToList();
                 if (certPemList.Count == 0)
                     throw new InvalidOperationException("ACME returned an empty certificate chain.");
@@ -146,32 +162,31 @@ namespace TruthGate_Web.Configuration
                 string leafPem = certPemList[0];
                 var intermediatesPem = certPemList.Skip(1).ToList();
 
-                // 2) Load leaf (public only) from PEM
-                // X509CertificateLoader.LoadCertificate expects bytes; we have a PEM string.
+                // Load leaf (public)
                 var leafPublic = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(leafPem));
 
-                // 3) Import ES256 private key from Certes into ECDsa
+                // Import ES256 private key from Certes
                 ReadOnlySpan<byte> pkcs8 = acctKey.ToDer();
                 using var ecdsa = ECDsa.Create();
                 ecdsa.ImportPkcs8PrivateKey(pkcs8, out _);
 
-                // 4) Bind private key to leaf
+                // Bind private key
                 var leafWithKey = leafPublic.CopyWithPrivateKey(ecdsa);
 
-                // 5) Build a PFX (PKCS#12) with leaf+key and intermediates
+                // Build PKCS#12
                 var pfxBuilder = new Pkcs12Builder();
 
-                // Bag A: leaf certificate + shrouded private key
+                // Bag A: leaf cert + shrouded key
                 var leafBag = new Pkcs12SafeContents();
-                leafBag.AddCertificate(leafWithKey); // no X509CertificateRecordProperties needed
+                leafBag.AddCertificate(leafWithKey);
                 leafBag.AddShroudedKey(
-                    ecdsa,                                      // <-- pass the AsymmetricAlgorithm, not bytes
-                    password: "",                               // empty password is fine for server-side storage
+                    ecdsa,
+                    password: "",
                     new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 100_000)
                 );
                 pfxBuilder.AddSafeContentsUnencrypted(leafBag);
 
-                // Bag B: intermediate certs (if any)
+                // Bag B: intermediates
                 if (intermediatesPem.Count > 0)
                 {
                     var intermBag = new Pkcs12SafeContents();
@@ -183,15 +198,16 @@ namespace TruthGate_Web.Configuration
                     pfxBuilder.AddSafeContentsUnencrypted(intermBag);
                 }
 
-                // MAC the file; overload here wants a string, so ""
+                // MAC & emit (empty password is fine on server side)
                 pfxBuilder.SealWithMac("", HashAlgorithmName.SHA256, 100_000);
-
-                // 6) Emit & load with the modern loader (non-obsolete)
                 var pfxBytes = pfxBuilder.Encode();
+
                 _logger.LogInformation("ACME[{Dir}] issued PFX for {Host} (len={Len})",
                     _isStaging ? "staging" : "prod", host, pfxBytes.Length);
 
+                // Non-obsolete load
                 return X509CertificateLoader.LoadPkcs12(pfxBytes, ReadOnlySpan<char>.Empty);
+
             }
             catch (Exception ex)
             {
