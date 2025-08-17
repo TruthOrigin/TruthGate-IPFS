@@ -14,6 +14,12 @@ namespace TruthGate_Web.Extensions
     ([FromRoute] string token, [FromServices] IAcmeChallengeStore store)
         => Results.Text(store.TryGetContent(token) ?? "", "text/plain"));
 
+            app.MapPost("/_acme/issue/{host}", ([FromRoute] string host, [FromServices] LiveCertProvider live) =>
+            {
+                live.QueueIssueIfMissing(host.Trim().ToLowerInvariant());
+                return Results.Ok(new { queued = host });
+            });
+
             if (app.Environment.IsDevelopment())
             {
                 app.UseWebAssemblyDebugging();
