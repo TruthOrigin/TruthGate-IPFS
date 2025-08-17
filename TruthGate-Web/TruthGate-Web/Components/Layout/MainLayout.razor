@@ -5,6 +5,17 @@
 <MudLayout>
     <AuthorizeView>
         <Authorized>
+            <style>
+                .truncate-text {
+                    display: block;
+                    max-width: 190px; /* limit how wide it can grow */
+                    white-space: nowrap; /* keep it on one line */
+                    overflow: hidden; /* hide overflow */
+                    text-overflow: ellipsis; /* show ... at the end */
+                }
+            </style>
+
+
             <MudLayout>
                 <BodyAdditionSignalR />
                 <PreRenderNavBar />
@@ -32,5 +43,5 @@
 
 @code {
 
-    
+
 }

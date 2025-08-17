@@ -36,8 +36,8 @@
         </ToolBarContent>
 
         <HeaderContent>
-            <MudTh style="min-width:220px;">Name</MudTh>
-            <MudTh style="min-width:460px;">CID</MudTh>
+            <MudTh >Name</MudTh>
+            <MudTh >CID</MudTh>
             <MudTh>Location</MudTh>
             <MudTh class="text-right">Size</MudTh>
             <MudTh>Actions</MudTh>
@@ -57,10 +57,10 @@
             </MudTd>
 
             <MudTd>
-                <div class="flex items-center gap-2">
-                    <MudText Class="break-all">@context.Cid</MudText>
+                <MudStack Row="true">
+                    <MudText Class="break-all truncate-text">@context.Cid</MudText>
                     <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => Copy(context.Cid))" />
-                </div>
+                </MudStack>
             </MudTd>
 
             <MudTd>
@@ -121,6 +121,10 @@
         <NoRecordsContent>
             <MudText>No pinned items yet.</MudText>
         </NoRecordsContent>
+
+        <PagerContent>
+            <MudTablePager />
+        </PagerContent>
     </MudTable>
 </MudContainer>
 
