@@ -158,6 +158,7 @@
         var parameters = new DialogParameters<AddOrEditDomainDialog>
         {
             { x => x.InitialDomain, domain.Domain },
+            { x => x.InitialRedirectUrl, domain.RedirectUrl },
             { x => x.InitialUseSSL, ToBool(domain.UseSSL) },
             { x => x.IsEdit, true }
         };

@@ -56,6 +56,7 @@
     [Parameter] public bool IsEdit { get; set; }
     [Parameter] public string? InitialDomain { get; set; }
     [Parameter] public bool InitialUseSSL { get; set; }
+    [Parameter] public string? InitialRedirectUrl { get; set; }
 
     private readonly Model _model = new();
     private MudForm _form = default!;
@@ -66,6 +67,7 @@
     {
         _model.Domain = InitialDomain ?? string.Empty;
         _model.UseSSL = InitialUseSSL;
+        _model.RedirectUrl = InitialRedirectUrl;
     }
 
     public sealed class DomainResult
