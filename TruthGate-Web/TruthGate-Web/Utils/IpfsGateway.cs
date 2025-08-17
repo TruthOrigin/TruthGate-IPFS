@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Primitives;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using TruthGate_Web.Endpoints;
 
 namespace TruthGate_Web.Utils
 {
@@ -35,7 +36,7 @@ namespace TruthGate_Web.Utils
             return opts;
         }
 
-        private static string NormalizeMfs(string path)
+        public static string NormalizeMfs(string path)
         {
             path = (path ?? "").Trim();
             if (string.IsNullOrEmpty(path)) return "/";
@@ -43,6 +44,39 @@ namespace TruthGate_Web.Utils
             // Collapse duplicate slashes, strip trailing except root
             path = "/" + string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries));
             return path == "" ? "/" : path;
+        }
+
+        /// <summary>
+        /// Validates a single-leaf name (no slashes, no traversal). Returns cleaned leaf or null.
+        /// </summary>
+        public static string? ToSafeLeaf(string input)
+        {
+            var s = (input ?? string.Empty).Trim();
+            s = s.Replace('\\', '/').Trim('/');
+            if (s.Length == 0) return null;
+            if (s.Contains('/') || s.Contains("..")) return null;
+            return s;
+        }
+
+        /// <summary>
+        /// Formats a CID via /api/v0/cid/format using the TruthGate proxy pipeline.
+        /// Returns null if conversion isn’t possible (e.g., v0 constraints) or the node rejects it.
+        /// </summary>
+        public static async Task<string?> FormatCidAsync(
+            string cid,
+            int version,
+            string baseEncoding,
+            IHttpClientFactory clientFactory)
+        {
+            // Build the IPFS API REST (not a full URL!) that your proxy will forward.
+            // Example: /api/v0/cid/format?arg=<cid>&v=1&b=base32
+            var rest = $"/api/v0/cid/format?arg={Uri.EscapeDataString(cid)}&v={version}&b={Uri.EscapeDataString(baseEncoding)}";
+
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, clientFactory);
+            if (!res.IsSuccessStatusCode) return null;
+
+            var text = await res.Content.ReadAsStringAsync();
+            return text.Trim(); // ipfs typically includes a trailing newline
         }
 
         private static async Task<Dictionary<string, string>?> ListDirMapAsync(

@@ -20,22 +20,22 @@ namespace TruthGate_Web.Controllers
         [HttpGet("GetDomainCid")]
         public async Task<IActionResult> GetDomainCid()
         {
-            // derive the domain from the request host
-            var host = HttpContext.Request.Host.Host;
+            // derive domain from host header
+            var host = HttpContext?.Request?.Host.Host;
             if (string.IsNullOrWhiteSpace(host))
                 return BadRequest(new { error = "No host header present in request" });
 
-            var leaf = ToSafeLeaf(host);
+            var leaf = IpfsGateway.ToSafeLeaf(host);
             if (leaf is null)
                 return BadRequest(new { error = "Invalid host" });
 
             const string basePath = "/production/sites";
-            var pathExact = NormalizeMfs($"{basePath}/{leaf}");
-            var pathLower = NormalizeMfs($"{basePath}/{leaf.ToLowerInvariant()}");
+            var pathExact = IpfsGateway.NormalizeMfs($"{basePath}/{leaf}");
+            var pathLower = IpfsGateway.NormalizeMfs($"{basePath}/{leaf.ToLowerInvariant()}");
 
-            // No-cache stat
+            // No-cache stat: try exact then lowercase
             string? cid = await IpfsGateway.ResolveMfsFolderToCidAsync(pathExact, _http);
-            string chosenPath = pathExact;
+            var chosenPath = pathExact;
 
             if (string.IsNullOrWhiteSpace(cid))
             {
@@ -46,9 +46,9 @@ namespace TruthGate_Web.Controllers
             if (string.IsNullOrWhiteSpace(cid))
                 return NotFound(new { host, searched = new[] { pathExact, pathLower }, error = "site not found" });
 
-            // Convert to v0/v1
-            var cidv1 = await TryFormatCidAsync(cid!, version: 1, baseEncoding: "base32");
-            var cidv0 = await TryFormatCidAsync(cid!, version: 0, baseEncoding: "base58btc");
+            // Convert to both v1 (base32) and v0 (base58btc) via proxy-backed formatter
+            var cidv1 = await IpfsGateway.FormatCidAsync(cid!, version: 1, baseEncoding: "base32", clientFactory: _http);
+            var cidv0 = await IpfsGateway.FormatCidAsync(cid!, version: 0, baseEncoding: "base58btc", clientFactory: _http);
 
             var payload = new
             {
@@ -60,38 +60,6 @@ namespace TruthGate_Web.Controllers
             };
 
             return Ok(payload);
-        }
-
-        // --- helpers ---
-
-        private static string NormalizeMfs(string path)
-        {
-            path = (path ?? string.Empty).Replace('\\', '/').Trim();
-            if (!path.StartsWith("/")) path = "/" + path;
-            path = "/" + string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries));
-            return path == "" ? "/" : path;
-        }
-
-        private static string? ToSafeLeaf(string input)
-        {
-            var s = (input ?? string.Empty).Trim();
-            s = s.Replace('\\', '/').Trim('/');
-            if (s.Length == 0) return null;
-            if (s.Contains('/') || s.Contains("..")) return null;
-            return s;
-        }
-
-        private async Task<string?> TryFormatCidAsync(string cid, int version, string baseEncoding)
-        {
-            var client = _http.CreateClient();
-            var url = $"http://127.0.0.1:5001/api/v0/cid/format?arg={Uri.EscapeDataString(cid)}&v={version}&b={Uri.EscapeDataString(baseEncoding)}";
-
-            using var req = new HttpRequestMessage(HttpMethod.Post, url);
-            using var res = await client.SendAsync(req);
-            if (!res.IsSuccessStatusCode) return null;
-
-            var text = await res.Content.ReadAsStringAsync();
-            return text.Trim();
         }
     }
 }
