@@ -124,68 +124,52 @@ namespace TruthGate_Web.Configuration
                     throw new InvalidOperationException($"ACME order did not become valid for {host} (status={oRes.Status}).");
 
                 // 4) Download chain and build PFX WITHOUT using key-bound ToPem
+                // 4) Download the chain
                 var chain = await order.Download();
 
-                // PARAMETERLESS ToPem → LEAF+INTERMEDIATES as PEM. No issuer lookup.
-                var pemChain = Certes.CertificateChainExtensions.ToPem(chain);
+                // === Build PFX without any ToPem/ToPfx usage ===
+                var (leafDer, issuersDer) = ExtractDerFromChain(chain);
 
-                static IEnumerable<string> SplitPem(string pemAll)
-                {
-                    const string begin = "-----BEGIN CERTIFICATE-----";
-                    const string end = "-----END CERTIFICATE-----";
-                    var i = 0;
-                    while (true)
-                    {
-                        var s = pemAll.IndexOf(begin, i, StringComparison.Ordinal);
-                        if (s < 0) yield break;
-                        var e = pemAll.IndexOf(end, s, StringComparison.Ordinal);
-                        if (e < 0) yield break;
-                        e += end.Length;
-                        yield return pemAll.Substring(s, e - s);
-                        i = e;
-                    }
-                }
+                // Load leaf (public)
+                var leafPublic = X509CertificateLoader.LoadCertificate(leafDer);
 
-                var certs = SplitPem(pemChain).ToList();
-                if (certs.Count == 0)
-                    throw new InvalidOperationException("ACME returned an empty certificate chain.");
-
-                var leafPem = certs[0];
-                var interPem = certs.Skip(1).ToList();
-
-                var leafPublic = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(leafPem));
-
+                // Import ES256 private key from Certes and bind to leaf
                 using var ecdsa = ECDsa.Create();
                 ecdsa.ImportPkcs8PrivateKey(acctKey.ToDer(), out _);
                 var leafWithKey = leafPublic.CopyWithPrivateKey(ecdsa);
 
+                // Assemble PKCS#12
                 var pfxBuilder = new Pkcs12Builder();
 
+                // Bag A: leaf + shrouded private key
                 var leafBag = new Pkcs12SafeContents();
                 leafBag.AddCertificate(leafWithKey);
                 leafBag.AddShroudedKey(
                     ecdsa,
-                    password: "",
+                    password: "", // empty is fine for your server-side storage
                     new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 100_000)
                 );
                 pfxBuilder.AddSafeContentsUnencrypted(leafBag);
 
-                if (interPem.Count > 0)
+                // Bag B: intermediates
+                if (issuersDer.Count > 0)
                 {
                     var interBag = new Pkcs12SafeContents();
-                    foreach (var icPem in interPem)
+                    foreach (var der in issuersDer)
                     {
-                        var ic = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(icPem));
+                        var ic = X509CertificateLoader.LoadCertificate(der);
                         interBag.AddCertificate(ic);
                     }
                     pfxBuilder.AddSafeContentsUnencrypted(interBag);
                 }
 
+                // Seal & emit
                 pfxBuilder.SealWithMac("", HashAlgorithmName.SHA256, 100_000);
                 var pfxBytes = pfxBuilder.Encode();
 
                 _logger.LogInformation("ACME[{Dir}] issued PFX for {Host} (len={Len})", Label, host, pfxBytes.Length);
                 return X509CertificateLoader.LoadPkcs12(pfxBytes, ReadOnlySpan<char>.Empty);
+
             }
             catch (Exception ex)
             {
@@ -211,5 +195,48 @@ namespace TruthGate_Web.Configuration
             await File.WriteAllTextAsync(_accountPemPath, key.ToPem(), ct);
             return key;
         }
+
+        // Pulls leaf + issuer DER certs out of Certes' CertificateChain without calling ToPem().
+        private static (byte[] leafDer, List<byte[]> issuersDer) ExtractDerFromChain(object certificateChain)
+        {
+            var t = certificateChain.GetType();
+
+            // Leaf: property is often "Certificate" or "Leaf"
+            var leafObj =
+                t.GetProperty("Certificate")?.GetValue(certificateChain)
+                ?? t.GetProperty("Leaf")?.GetValue(certificateChain)
+                ?? throw new InvalidOperationException("CertificateChain leaf not found.");
+
+            var toDer = leafObj.GetType().GetMethod("ToDer")
+                       ?? throw new InvalidOperationException("Leaf.ToDer() not found.");
+            var leafDer = (byte[])toDer.Invoke(leafObj, Array.Empty<object>())!;
+
+            // Issuers: property names vary across Certes versions
+            var issuerPropNames = new[] { "Chain", "IssuerChain", "IssuerCertificates", "Certificates" };
+            var issuersDer = new List<byte[]>();
+
+            foreach (var name in issuerPropNames)
+            {
+                var p = t.GetProperty(name);
+                if (p == null) continue;
+
+                if (p.GetValue(certificateChain) is System.Collections.IEnumerable coll)
+                {
+                    foreach (var item in coll)
+                    {
+                        var m = item.GetType().GetMethod("ToDer");
+                        if (m == null) continue;
+                        var der = (byte[])m.Invoke(item, Array.Empty<object>())!;
+                        // Some versions include the leaf again in the list — filter it out
+                        if (!der.AsSpan().SequenceEqual(leafDer))
+                            issuersDer.Add(der);
+                    }
+                    break; // we found a valid property
+                }
+            }
+
+            return (leafDer, issuersDer);
+        }
+
     }
 }
