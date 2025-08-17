@@ -1,0 +1,537 @@
+﻿@page "/pinned"
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using MudBlazor
+@using TruthGate_Web.Components.Pages.Settings.Shared
+@using TruthGate_Web.Endpoints
+@using TruthGate_Web.Utils
+@inject IHttpClientFactory HttpFactory
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@inject IApiKeyProvider Keys
+@rendermode InteractiveServer
+@inject IJSRuntime JS
+
+<MudContainer Class="py-3" MaxWidth="MaxWidth.Large">
+    <div class="flex items-center justify-between mb-4">
+        <MudText Typo="Typo.h3">Pinned Content</MudText>
+        <br />
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.PushPin"
+                   OnClick="OnAddPinned">
+            Add Pinned Item
+        </MudButton>
+    </div>
+
+    <MudTable Items="_items" Dense="true" Hover="true" Bordered="true" Loading="_loading">
+        <ToolBarContent>
+            <MudTextField @bind-Value="_search"
+                          Placeholder="Search by name or CID..."
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          Class="w-full md:w-96" />
+            <MudSpacer />
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="Reload">Refresh</MudButton>
+        </ToolBarContent>
+
+        <HeaderContent>
+            <MudTh style="min-width:220px;">Name</MudTh>
+            <MudTh style="min-width:460px;">CID</MudTh>
+            <MudTh>Location</MudTh>
+            <MudTh class="text-right">Size</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+
+        <RowTemplate>
+            <MudTd>
+                @if (!string.IsNullOrWhiteSpace(context.Name))
+                {
+                    <MudText>@context.Name</MudText>
+                    <MudText Typo="Typo.caption" Class="text-secondary">@context.MfsPath</MudText>
+                }
+                else
+                {
+                    <MudText Color="Color.Primary">—</MudText>
+                }
+            </MudTd>
+
+            <MudTd>
+                <div class="flex items-center gap-2">
+                    <MudText Class="break-all">@context.Cid</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => Copy(context.Cid))" />
+                </div>
+            </MudTd>
+
+            <MudTd>
+                @if (context.IsManaged)
+                {
+                    <MudChip T="string" Color="Color.Success" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Folder">/production/pinned</MudChip>
+                }
+                else if (context.IsProductionNonManaged)
+                {
+                    <MudTooltip Text="This pinned CID is under /production but not managed by /production/pinned. Deleting here is disabled.">
+                        <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Error">/production (external)</MudChip>
+                    </MudTooltip>
+                }
+                else
+                {
+                    <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.HelpOutline">unmapped</MudChip>
+                }
+            </MudTd>
+
+            <MudTd Class="text-right">
+                @if (context.SizeBytes is long b)
+                {
+                    <MudText>@FormatSize(b)</MudText>
+                }
+                else
+                {
+                    <MudText Color="Color.Primary">—</MudText>
+                }
+            </MudTd>
+
+            <MudTd>
+                @if (context.CanDelete)
+                {
+                    <MudButton Size="Size.Small"
+                               Variant="Variant.Outlined"
+                               Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.DeleteForever"
+                               OnClick="@(() => OnDelete(context))">
+                        Delete
+                    </MudButton>
+                }
+                else
+                {
+                    <MudTooltip Text="@(string.IsNullOrEmpty(context.DeleteDisabledReason)
+                     ? "Deletion disabled"
+                     : context.DeleteDisabledReason)">
+                        <MudButton Size="Size.Small"
+                                   Variant="Variant.Outlined"
+                                   Disabled="true"
+                                   StartIcon="@Icons.Material.Filled.DeleteForever">
+                            Delete
+                        </MudButton>
+                    </MudTooltip>
+                }
+            </MudTd>
+        </RowTemplate>
+
+        <NoRecordsContent>
+            <MudText>No pinned items yet.</MudText>
+        </NoRecordsContent>
+    </MudTable>
+</MudContainer>
+
+@code {
+    private bool _loading = true;
+    private string? _search;
+    private List<PinnedRow> _all = new();
+    private IEnumerable<PinnedRow> _items => string.IsNullOrWhiteSpace(_search)
+        ? _all
+        : _all.Where(x =>
+            (!string.IsNullOrWhiteSpace(x.Name) && x.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)) ||
+             x.Cid.Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    private const string ProductionRoot = "/production";
+    private const string ManagedRoot = "/production/pinned";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Reload();
+    }
+
+    private async Task Reload()
+    {
+        try
+        {
+            _loading = true;
+
+            // 1) Get recursive pins (top-level)
+            var pins = await ListRecursivePinsAsync();
+
+            // 2) Snapshot immediate children of /production and /production/pinned (Name -> (CID, Path))
+            var prodMap = await ListMfsChildrenAsync(ProductionRoot);
+            var pinnedMap = await ListMfsChildrenAsync(ManagedRoot);
+
+            // 3) Build rows; try map each CID to an MFS path
+            var rows = new List<PinnedRow>(pins.Count);
+
+            foreach (var cid in pins)
+            {
+                string? mfsPath = null;
+                string? name = null;
+                bool isManaged = false;
+                bool isProdOther = false;
+
+                // Try exact in /production/pinned
+                var pinnedHit = pinnedMap.FirstOrDefault(kv =>
+                    string.Equals(kv.Value.Cid, cid, StringComparison.OrdinalIgnoreCase));
+
+                if (pinnedHit.Key is not null)
+                {
+                    name = pinnedHit.Key;
+                    mfsPath = IpfsGateway.NormalizeMfs($"{ManagedRoot}/{name}");
+                    isManaged = true;
+                }
+                else
+                {
+                    // Try exact among /production direct children (not pinned)
+                    var prodHit = prodMap.FirstOrDefault(kv =>
+                        string.Equals(kv.Value.Cid, cid, StringComparison.OrdinalIgnoreCase));
+
+                    if (prodHit.Key is not null)
+                    {
+                        name = prodHit.Key;
+                        mfsPath = IpfsGateway.NormalizeMfs($"{ProductionRoot}/{name}");
+                        isProdOther = !mfsPath.StartsWith(ManagedRoot, StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+
+                // Size: prefer MFS stat when we have a path; else DAG stat; fallback block size
+                long? size = null;
+                if (!string.IsNullOrWhiteSpace(mfsPath))
+                    size = await TryMfsCumulativeSizeAsync(mfsPath);
+                if (size is null)
+                    size = await TryDagSizeAsync(cid) ?? await TryBlockSizeAsync(cid);
+
+                var canDelete = isManaged; // only managed entries deletable from this UI
+                var reason = canDelete ? null :
+                    (isProdOther
+                        ? "Pinned under /production but not /production/pinned — likely used elsewhere."
+                        : "Unmanaged pin — delete via node if you’re sure.");
+
+                rows.Add(new PinnedRow
+                    {
+                        Cid = cid,
+                        Name = name,
+                        MfsPath = mfsPath,
+                        IsManaged = isManaged,
+                        IsProductionNonManaged = isProdOther,
+                        SizeBytes = size,
+                        CanDelete = canDelete,
+                        DeleteDisabledReason = reason
+                    });
+            }
+
+            _all = rows
+                .OrderByDescending(r => r.IsManaged) // bubble managed to top
+                .ThenBy(r => r.Name ?? r.Cid, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load pins: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnAddPinned()
+    {
+        var parameters = new DialogParameters<AddPinnedItemDialog>();
+        var dialog = Dialogs.Show<AddPinnedItemDialog>("Add Pinned Item", parameters);
+        var result = await dialog.Result;
+
+        if (result.Canceled || result.Data is not AddPinnedItemDialog.AddPinnedResult r) return;
+
+        try
+        {
+            // Validate name uniqueness under /production/pinned (case-insensitive)
+            var children = await ListMfsChildrenAsync(ManagedRoot);
+            if (children.Keys.Any(k => string.Equals(k, r.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                Snackbar.Add($"A pinned item named '{r.Name}' already exists.", Severity.Error);
+                return;
+            }
+
+            // Verify CID exists (will fetch/resolve if needed)
+            if (!await VerifyCidExistsAsync(r.Cid))
+            {
+                Snackbar.Add("CID does not exist or cannot be resolved.", Severity.Error);
+                return;
+            }
+
+            // Ensure parent exists
+            await IpfsGateway.EnsureMfsFolderExistsAsync(ManagedRoot, HttpFactory);
+
+            // Copy DAG into MFS at the desired leaf
+            var dest = IpfsGateway.NormalizeMfs($"{ManagedRoot}/{r.Name}");
+            await FilesCpFromIpfsAsync(r.Cid, dest);
+
+            // Pin recursively
+            await PinAddRecursiveAsync(r.Cid);
+
+            Snackbar.Add($"Pinned '{r.Name}' → {r.Cid}", Severity.Success);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to add pinned item: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OnDelete(PinnedRow row)
+    {
+        if (!row.CanDelete) return;
+
+        var parameters = new DialogParameters<ConfirmDeleteDialog>
+        {
+            { x => x.Message, $"Unpin and delete '{(row.Name ?? row.Cid)}'?" }
+        };
+        var dialog = Dialogs.Show<ConfirmDeleteDialog>("Confirm Delete", parameters);
+        var result = await dialog.Result;
+        if (result.Canceled || result.Data is not bool ok || !ok) return;
+
+        try
+        {
+            // Unpin recursive
+            await PinRmRecursiveAsync(row.Cid);
+
+            // Remove MFS entry if we have one (managed entries do)
+            if (!string.IsNullOrWhiteSpace(row.MfsPath))
+            {
+                await FilesRmRecursiveAsync(row.MfsPath);
+                // Targeted invalidation is handled by your cascade in Ensure/Rename flows.
+                // Here we simply refresh the list.
+            }
+
+            Snackbar.Add($"Deleted pinned item '{(row.Name ?? row.Cid)}'.", Severity.Success);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB", "PB"];
+        double v = bytes;
+        int u = 0;
+        while (v >= 1024 && u < units.Length - 1) { v /= 1024; u++; }
+        return $"{v:0.##} {units[u]}";
+    }
+
+    // ---------------------------
+    // Backend calls (via proxy)
+    // ---------------------------
+
+    private async Task<Dictionary<string, (string Cid, string Path)>> ListMfsChildrenAsync(string parentPath)
+    {
+        parentPath = IpfsGateway.NormalizeMfs(parentPath);
+        var rest = $"/api/v0/files/ls?arg={Uri.EscapeDataString(parentPath)}&long=true";
+
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            return new(StringComparer.OrdinalIgnoreCase);
+
+        var root = await ReadLastJsonObjectAsync(res);
+        var dict = new Dictionary<string, (string Cid, string Path)>(StringComparer.OrdinalIgnoreCase);
+        if (root is null) return dict;
+
+        if (root.Value.TryGetProperty("Entries", out var entries) && entries.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var e in entries.EnumerateArray())
+            {
+                var name = e.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
+                var cid = e.TryGetProperty("Hash", out var h) ? h.GetString() ?? "" : "";
+                if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(cid))
+                {
+                    var path = IpfsGateway.NormalizeMfs($"{parentPath}/{name}");
+                    dict[name] = (cid, path);
+                }
+            }
+        }
+        return dict;
+    }
+
+
+    private async Task<List<string>> ListRecursivePinsAsync()
+    {
+        var rest = "/api/v0/pin/ls?type=recursive";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode) return new();
+
+        var root = await ReadLastJsonObjectAsync(res);
+        if (root is null) return new();
+
+        var list = new List<string>();
+        if (root.Value.TryGetProperty("Keys", out var keys) && keys.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in keys.EnumerateObject())
+                list.Add(prop.Name);
+        }
+        return list;
+    }
+
+    private async Task<bool> VerifyCidExistsAsync(string cid)
+    {
+        // /api/v0/ls will resolve DAG roots; if it returns 200 we're good
+        var rest = $"/api/v0/ls?arg={Uri.EscapeDataString(cid)}";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        return res.IsSuccessStatusCode;
+    }
+
+    private async Task FilesCpFromIpfsAsync(string cid, string destPath)
+    {
+        var from = $"/ipfs/{cid}";
+        var rest = $"/api/v0/files/cp?arg={Uri.EscapeDataString(from)}&arg={Uri.EscapeDataString(destPath)}&parents=true";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"files/cp failed ({(int)res.StatusCode})");
+    }
+
+    private async Task FilesRmRecursiveAsync(string mfsPath)
+    {
+        mfsPath = IpfsGateway.NormalizeMfs(mfsPath);
+        var rest = $"/api/v0/files/rm?arg={Uri.EscapeDataString(mfsPath)}&recursive=true";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"files/rm failed for '{mfsPath}' ({(int)res.StatusCode})");
+    }
+
+    private async Task PinAddRecursiveAsync(string cid)
+    {
+        var rest = $"/api/v0/pin/add?arg={Uri.EscapeDataString(cid)}&recursive=true";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"pin/add failed ({(int)res.StatusCode})");
+    }
+
+    private async Task PinRmRecursiveAsync(string cid)
+    {
+        var rest = $"/api/v0/pin/rm?arg={Uri.EscapeDataString(cid)}&recursive=true";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"pin/rm failed ({(int)res.StatusCode})");
+    }
+
+    private async Task<long?> TryMfsCumulativeSizeAsync(string mfsPath)
+    {
+        var rest = $"/api/v0/files/stat?arg={Uri.EscapeDataString(mfsPath)}";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode) return null;
+
+        var root = await ReadLastJsonObjectAsync(res);
+        if (root is null) return null;
+
+        if (root.Value.TryGetProperty("CumulativeSize", out var cs) && TryGetInt64Flexible(cs, out var val))
+            return val;
+
+        if (root.Value.TryGetProperty("Size", out var sz) && TryGetInt64Flexible(sz, out var sVal))
+            return sVal;
+
+        return null;
+    }
+
+    private async Task<long?> TryDagSizeAsync(string cid)
+    {
+        var rest = $"/api/v0/dag/stat?arg={Uri.EscapeDataString(cid)}";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode) return null;
+
+        var root = await ReadLastJsonObjectAsync(res);
+        if (root is null) return null;
+
+        if (root.Value.TryGetProperty("Size", out var sz) && TryGetInt64Flexible(sz, out var size))
+            return size;
+
+        return null;
+    }
+
+    private async Task<long?> TryBlockSizeAsync(string cid)
+    {
+        var rest = $"/api/v0/block/stat?arg={Uri.EscapeDataString(cid)}";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode) return null;
+
+        var root = await ReadLastJsonObjectAsync(res);
+        if (root is null) return null;
+
+        if (root.Value.TryGetProperty("Size", out var sz) && TryGetInt64Flexible(sz, out var size))
+            return size;
+
+        return null;
+    }
+
+
+    private static async Task<JsonElement?> ReadLastJsonObjectAsync(HttpResponseMessage res)
+    {
+        var text = await res.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        // Fast path: single JSON value
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            return doc.RootElement.Clone();
+        }
+        catch
+        {
+            // Fall through for NDJSON / concatenated JSON objects
+        }
+
+        // NDJSON: take the LAST line that is a valid JSON object
+        foreach (var line in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Reverse())
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith("{") || !trimmed.EndsWith("}")) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                return doc.RootElement.Clone();
+            }
+            catch { /* try previous line */ }
+        }
+
+        // Last-ditch: carve the last {...} block
+        var lastOpen = text.LastIndexOf('{');
+        var lastClose = text.LastIndexOf('}');
+        if (lastOpen >= 0 && lastClose > lastOpen)
+        {
+            var candidate = text.Substring(lastOpen, lastClose - lastOpen + 1).Trim();
+            try
+            {
+                using var doc = JsonDocument.Parse(candidate);
+                return doc.RootElement.Clone();
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static bool TryGetInt64Flexible(JsonElement el, out long value)
+    {
+        if (el.ValueKind == JsonValueKind.Number && el.TryGetInt64(out value)) return true;
+        if (el.ValueKind == JsonValueKind.String && long.TryParse(el.GetString(), out value)) return true;
+        value = 0;
+        return false;
+    }
+
+
+    private async Task Copy(string text)
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+        Snackbar.Add("Copied to clipboard", Severity.Info);
+    }
+
+    private sealed class PinnedRow
+    {
+        public required string Cid { get; init; }
+        public string? Name { get; init; }
+        public string? MfsPath { get; init; }
+        public bool IsManaged { get; init; }
+        public bool IsProductionNonManaged { get; init; }
+        public long? SizeBytes { get; init; }
+        public bool CanDelete { get; init; }
+        public string? DeleteDisabledReason { get; init; }
+    }
+
+
+}

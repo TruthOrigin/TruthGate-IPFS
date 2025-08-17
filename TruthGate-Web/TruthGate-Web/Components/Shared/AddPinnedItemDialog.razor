@@ -1,0 +1,86 @@
+﻿@using MudBlazor
+@using TruthGate_Web.Utils
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form" Model="_model" Validation="Validate">
+            <MudText Typo="Typo.h5" Class="mb-2">Add Pinned Item</MudText>
+
+            <MudTextField Label="Folder name (under /production/pinned)"
+                          @bind-Value="_model.Name"
+                          Immediate="true"
+                          Required="true" />
+
+            <MudTextField Label="CID (v0 or v1)"
+                          @bind-Value="_model.Cid"
+                          Immediate="true"
+                          Required="true" />
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudText Color="Color.Error" Class="mt-2">@_error</MudText>
+            }
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="Submit" Color="Color.Primary" Variant="Variant.Filled">Add</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+
+    public sealed class AddPinnedResult
+    {
+        public required string Name { get; init; }
+        public required string Cid { get; init; }
+    }
+
+    private sealed class Model
+    {
+        public string Name { get; set; } = "";
+        public string Cid { get; set; } = "";
+    }
+
+    private readonly Model _model = new();
+    private MudForm _form = default!;
+    private string? _error;
+
+    private IEnumerable<string> Validate()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(_model.Name))
+            yield return "Name is required.";
+
+        if (string.IsNullOrWhiteSpace(_model.Cid))
+            yield return "CID is required.";
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Submit()
+    {
+        if (string.IsNullOrWhiteSpace(_model.Name) || string.IsNullOrWhiteSpace(_model.Cid))
+        {
+            _error = "Please fill in all fields.";
+            return;
+        }
+
+        // forbid pathy input
+        var leaf = IpfsGateway.ToSafeLeaf(_model.Name);
+        if (leaf is null)
+        {
+            _error = "Invalid name.";
+            return;
+        }
+
+        MudDialog.Close(DialogResult.Ok(new AddPinnedResult
+            {
+                Name = leaf,
+                Cid = _model.Cid.Trim()
+            }));
+    }
+}
