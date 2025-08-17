@@ -81,10 +81,11 @@ if (!builder.Environment.IsDevelopment())
     builder.Services.AddSingleton<ICertificateStore>(sp => new FileCertStore(certDir));
     builder.Services.AddSingleton<IAcmeChallengeStore, MemoryChallengeStore>();
     builder.Services.AddSingleton<IAcmeIssuer>(sp =>
-        new CertesAcmeIssuer(
-            sp.GetRequiredService<IAcmeChallengeStore>(),
-            useStaging: builder.Environment.IsDevelopment(),
-            accountPemPath: Path.Combine(certDir, "account.pem")));
+    new CertesAcmeIssuer(
+        sp.GetRequiredService<IAcmeChallengeStore>(),
+        sp.GetRequiredService<ILogger<CertesAcmeIssuer>>(),
+        useStaging: builder.Environment.IsDevelopment(),
+        accountPemPath: Path.Combine(certDir, "account.pem")));
     builder.Services.AddSingleton<LiveCertProvider>();
     builder.Services.AddHostedService<ConfigWatchAndIssueService>();
 
