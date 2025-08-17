@@ -135,7 +135,7 @@ if (!builder.Environment.IsDevelopment())
                             return fallback;
 
                         case SslDecisionKind.NoneFailTls:
-                            return null;
+                            return fallback;
 
                         case SslDecisionKind.RealIfPresent:
                             {
