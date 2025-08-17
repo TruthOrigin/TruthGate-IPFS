@@ -78,12 +78,16 @@ if (!builder.Environment.IsDevelopment())
     // === DI: NO FLUFFYSPOON HERE ===
     builder.Services.AddSingleton<IConfigService, ConfigService>();
     builder.Services.AddSingleton(new SelfSignedCertCache(selfSignedCert));
-    builder.Services.AddSingleton<ICertificateStore>(sp => new FileCertStore(certDir));
-    builder.Services.AddSingleton<IAcmeChallengeStore, MemoryChallengeStore>();
 
     var acmeStaging =
-        builder.Environment.IsDevelopment() ||
-        string.Equals(Environment.GetEnvironmentVariable("TRUTHGATE_ACME_STAGING"), "true", StringComparison.OrdinalIgnoreCase);
+    builder.Environment.IsDevelopment() ||
+    string.Equals(Environment.GetEnvironmentVariable("TRUTHGATE_ACME_STAGING"), "true", StringComparison.OrdinalIgnoreCase);
+
+
+    builder.Services.AddSingleton<ICertificateStore>(sp => new FileCertStore(certDir, acmeStaging));
+
+    builder.Services.AddSingleton<IAcmeChallengeStore, MemoryChallengeStore>();
+
 
 
     var accountPem = Path.Combine(certDir, acmeStaging ? "account.staging.pem" : "account.prod.pem");
