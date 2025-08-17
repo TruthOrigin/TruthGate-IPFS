@@ -14,20 +14,18 @@ namespace TruthGate_Web.Configuration
 
         public Task StartAsync(CancellationToken ct)
         {
-            var cfg = _config.Get();
-            var hosts = cfg.Domains
+            var hosts = _config.Get().Domains
                 .Where(d => bool.TryParse(d.UseSSL, out var ok) && ok)
                 .Select(d => (d.Domain ?? "").Trim().ToLowerInvariant())
                 .Where(h => !string.IsNullOrWhiteSpace(h))
                 .Distinct();
 
             foreach (var h in hosts)
-                _live.QueueIssueIfMissing(h);
+                _live.TryQueueIssueIfMissing(h);  // unified path
 
             return Task.CompletedTask;
         }
 
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
     }
-
 }
