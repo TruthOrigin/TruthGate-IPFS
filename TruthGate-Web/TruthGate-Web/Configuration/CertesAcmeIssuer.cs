@@ -1,9 +1,11 @@
-﻿using System.Security.Cryptography;
+﻿using System.Reflection;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Certes;
 using Certes.Acme;
 using Certes.Acme.Resource;
+using System.Security.Cryptography.Pkcs;
 
 namespace TruthGate_Web.Configuration
 {
@@ -113,11 +115,82 @@ namespace TruthGate_Web.Configuration
                     _challengeStore.Remove(http.Token);
                 }
 
-                var key = KeyFactory.NewKey(KeyAlgorithm.ES256);
-                var chain = await order.Generate(new CsrInfo { CommonName = host }, key);
-                var pfxBytes = chain.ToPfx(key).Build(host, (string?)null);
+                var acctKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
 
-                _logger.LogInformation("ACME[{Dir}] issued PFX for {Host} (len={Len})", _isStaging ? "staging" : "prod", host, pfxBytes.Length);
+                // If your Certes version supports preferredChain, pass it; otherwise this overload still works.
+                var chain = await order.Generate(new CsrInfo { CommonName = host }, acctKey);
+
+                // 1) Split concatenated PEM (leaf first, then intermediates)
+                static IEnumerable<string> SplitPemCerts(string pemAll)
+                {
+                    const string begin = "-----BEGIN CERTIFICATE-----";
+                    const string end = "-----END CERTIFICATE-----";
+                    int i = 0;
+                    while (true)
+                    {
+                        int s = pemAll.IndexOf(begin, i, StringComparison.Ordinal);
+                        if (s < 0) yield break;
+                        int e = pemAll.IndexOf(end, s, StringComparison.Ordinal);
+                        if (e < 0) yield break;
+                        e += end.Length;
+                        yield return pemAll.Substring(s, e - s);
+                        i = e;
+                    }
+                }
+
+                var pemChain = chain.ToPem();
+                var certPemList = SplitPemCerts(pemChain).ToList();
+                if (certPemList.Count == 0)
+                    throw new InvalidOperationException("ACME returned an empty certificate chain.");
+
+                string leafPem = certPemList[0];
+                var intermediatesPem = certPemList.Skip(1).ToList();
+
+                // 2) Load leaf (public only) from PEM
+                // X509CertificateLoader.LoadCertificate expects bytes; we have a PEM string.
+                var leafPublic = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(leafPem));
+
+                // 3) Import ES256 private key from Certes into ECDsa
+                ReadOnlySpan<byte> pkcs8 = acctKey.ToDer();
+                using var ecdsa = ECDsa.Create();
+                ecdsa.ImportPkcs8PrivateKey(pkcs8, out _);
+
+                // 4) Bind private key to leaf
+                var leafWithKey = leafPublic.CopyWithPrivateKey(ecdsa);
+
+                // 5) Build a PFX (PKCS#12) with leaf+key and intermediates
+                var pfxBuilder = new Pkcs12Builder();
+
+                // Bag A: leaf certificate + shrouded private key
+                var leafBag = new Pkcs12SafeContents();
+                leafBag.AddCertificate(leafWithKey); // no X509CertificateRecordProperties needed
+                leafBag.AddShroudedKey(
+                    ecdsa,                                      // <-- pass the AsymmetricAlgorithm, not bytes
+                    password: "",                               // empty password is fine for server-side storage
+                    new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 100_000)
+                );
+                pfxBuilder.AddSafeContentsUnencrypted(leafBag);
+
+                // Bag B: intermediate certs (if any)
+                if (intermediatesPem.Count > 0)
+                {
+                    var intermBag = new Pkcs12SafeContents();
+                    foreach (var icPem in intermediatesPem)
+                    {
+                        var ic = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(icPem));
+                        intermBag.AddCertificate(ic);
+                    }
+                    pfxBuilder.AddSafeContentsUnencrypted(intermBag);
+                }
+
+                // MAC the file; overload here wants a string, so ""
+                pfxBuilder.SealWithMac("", HashAlgorithmName.SHA256, 100_000);
+
+                // 6) Emit & load with the modern loader (non-obsolete)
+                var pfxBytes = pfxBuilder.Encode();
+                _logger.LogInformation("ACME[{Dir}] issued PFX for {Host} (len={Len})",
+                    _isStaging ? "staging" : "prod", host, pfxBytes.Length);
+
                 return X509CertificateLoader.LoadPkcs12(pfxBytes, ReadOnlySpan<char>.Empty);
             }
             catch (Exception ex)
@@ -142,6 +215,46 @@ namespace TruthGate_Web.Configuration
             var key = KeyFactory.NewKey(KeyAlgorithm.ES256);
             await File.WriteAllTextAsync(_accountPemPath, key.ToPem(), ct);
             return key;
+        }
+
+        private static (byte[] leafDer, List<byte[]> issuersDer) SplitChainDynamic(object certificateChain)
+        {
+            // Try to get the leaf certificate (commonly "Certificate" or "Leaf")
+            var t = certificateChain.GetType();
+            object? leafObj =
+                t.GetProperty("Certificate", BindingFlags.Public | BindingFlags.Instance)?.GetValue(certificateChain)
+                ?? t.GetProperty("Leaf", BindingFlags.Public | BindingFlags.Instance)?.GetValue(certificateChain);
+
+            if (leafObj is null)
+                throw new InvalidOperationException("Unable to find leaf certificate on CertificateChain.");
+
+            // leaf.ToDer()
+            var leafDer = (byte[])leafObj.GetType().GetMethod("ToDer")!.Invoke(leafObj, Array.Empty<object>())!;
+
+            // Find a collection of issuers; different Certes versions use different names
+            var issuerPropNames = new[] { "Chain", "IssuerChain", "IssuerCertificates", "Issuers", "Certificates" };
+            var issuersDer = new List<byte[]>();
+
+            foreach (var name in issuerPropNames)
+            {
+                var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                if (p is null) continue;
+
+                if (p.GetValue(certificateChain) is System.Collections.IEnumerable coll)
+                {
+                    foreach (var item in coll)
+                    {
+                        // item.ToDer() → byte[]
+                        var der = (byte[])item.GetType().GetMethod("ToDer")!.Invoke(item, Array.Empty<object>())!;
+                        // avoid duplicating the leaf if this property returns [leaf + issuers]
+                        if (!der.AsSpan().SequenceEqual(leafDer))
+                            issuersDer.Add(der);
+                    }
+                    if (issuersDer.Count > 0) break;
+                }
+            }
+
+            return (leafDer, issuersDer);
         }
     }
 
