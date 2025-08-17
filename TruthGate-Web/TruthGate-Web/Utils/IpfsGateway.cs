@@ -14,6 +14,79 @@ namespace TruthGate_Web.Utils
         private static string DomainCidCacheKey(string mfsPath) => $"cid:{mfsPath}";
         private static string LocalityCacheKey(string cid) => $"local:{cid}";
 
+
+        public enum CacheMode
+        {
+            UseCache,  // read & write cache (today's behavior)
+            Bypass,    // do not read cache and do not write cache
+            Refresh    // do not read cache; write fresh results
+        }
+
+        private static MemoryCacheEntryOptions Tag(
+            MemoryCacheEntryOptions opts, string? cid = null, string? mfsPath = null)
+        {
+            if (!string.IsNullOrWhiteSpace(cid))
+                opts.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid));
+            if (!string.IsNullOrWhiteSpace(mfsPath))
+                opts.AddExpirationToken(IpfsCacheIndex.GetMfsToken(mfsPath));
+
+            // Optional: a global token lets you nuke *everything* instantly.
+            opts.AddExpirationToken(IpfsCacheIndex.GetGlobalToken());
+            return opts;
+        }
+
+        private static string NormalizeMfs(string path)
+        {
+            path = (path ?? "").Trim();
+            if (string.IsNullOrEmpty(path)) return "/";
+            if (!path.StartsWith("/")) path = "/" + path;
+            // Collapse duplicate slashes, strip trailing except root
+            path = "/" + string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries));
+            return path == "" ? "/" : path;
+        }
+
+        private static async Task<Dictionary<string, string>?> ListDirMapAsync(
+    string cid, string dirCanonical, IHttpClientFactory factory, IMemoryCache cache, TimeSpan ttl,
+    CacheMode mode = CacheMode.UseCache)
+        {
+            var key = LsCacheKey(cid, (dirCanonical ?? "").Trim('/').ToLowerInvariant());
+            if (mode == CacheMode.UseCache && cache.TryGetValue(key, out Dictionary<string, string>? cached))
+                return cached;
+
+            var client = factory.CreateClient();
+            var arg = string.IsNullOrWhiteSpace(dirCanonical) ? cid : $"{cid}/{dirCanonical.Trim('/')}";
+            var url = $"http://127.0.0.1:5001/api/v0/ls?arg={Uri.EscapeDataString(arg)}";
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, url);
+            using var res = await client.SendAsync(req);
+            if (!res.IsSuccessStatusCode) return null;
+
+            using var s = await res.Content.ReadAsStreamAsync();
+            using var doc = await JsonDocument.ParseAsync(s);
+
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (doc.RootElement.TryGetProperty("Objects", out var objs) && objs.GetArrayLength() > 0)
+            {
+                foreach (var link in objs[0].GetProperty("Links").EnumerateArray())
+                {
+                    var name = link.GetProperty("Name").GetString() ?? "";
+                    if (!string.IsNullOrEmpty(name))
+                        dict[name.ToLowerInvariant()] = name; // lower -> actual
+                }
+            }
+
+            if (mode != CacheMode.Bypass)
+            {
+                cache.Set(key, dict, Tag(
+                    new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid));
+            }
+
+            return dict;
+        }
+
+
+
+
         // ----- Directory listing cache -----
         private static async Task<Dictionary<string, string>?> ListDirMapCachedAsync(
             string cid, string dirCanonical, IHttpClientFactory factory, IMemoryCache cache, TimeSpan ttl)
@@ -53,7 +126,8 @@ namespace TruthGate_Web.Utils
 
         // ----- Path resolution (case-insensitive) -----
         public static async Task<string?> ResolvePathCaseInsensitiveAsync(
-            string cid, string rest, IHttpClientFactory factory, IMemoryCache cache, TimeSpan ttl)
+    string cid, string rest, IHttpClientFactory factory, IMemoryCache cache, TimeSpan ttl,
+    CacheMode mode = CacheMode.UseCache)
         {
             var decoded = Uri.UnescapeDataString(rest ?? "");
             var path = decoded.Trim('/');
@@ -66,7 +140,7 @@ namespace TruthGate_Web.Utils
             for (int i = 0; i < segments.Length; i++)
             {
                 var seg = segments[i];
-                var map = await ListDirMapCachedAsync(cid, currentDir, factory, cache, ttl);
+                var map = await ListDirMapAsync(cid, currentDir, factory, cache, ttl, mode);
                 if (map is null) return null;
                 if (!map.TryGetValue(seg.ToLowerInvariant(), out var actual)) return null;
 
@@ -76,6 +150,7 @@ namespace TruthGate_Web.Utils
 
             return string.Join('/', resolved);
         }
+
 
         public static async Task<bool> PathExistsHeadAsync(
             string cid, string rest, int gatewayPort, IHttpClientFactory factory)
@@ -91,14 +166,28 @@ namespace TruthGate_Web.Utils
             return resp.IsSuccessStatusCode;
         }
 
+        public static Task<(bool exists, string? correctedPath)> PathExistsInIpfsAsync(
+    string cid,
+    string rest,
+    int gatewayPort,
+    IHttpClientFactory factory,
+    IMemoryCache cache,
+    TimeSpan ttl)
+        {
+            return PathExistsInIpfsAsync(
+                cid, rest, gatewayPort, factory, cache, ttl, CacheMode.UseCache);
+        }
+
+
         // Returns: (exists, correctedPath)
         public static async Task<(bool exists, string? correctedPath)> PathExistsInIpfsAsync(
-            string cid,
-            string rest,
-            int gatewayPort,
-            IHttpClientFactory factory,
-            IMemoryCache cache,
-            TimeSpan ttl)
+    string cid,
+    string rest,
+    int gatewayPort,
+    IHttpClientFactory factory,
+    IMemoryCache cache,
+    TimeSpan ttl,
+    CacheMode mode)
         {
             string? correctedPath = null;
 
@@ -106,19 +195,27 @@ namespace TruthGate_Web.Utils
             var inputLower = input.ToLowerInvariant();
             if (string.IsNullOrEmpty(input)) return (true, "");
 
+            // ✅ use variables, not expression-bodied locals
+            var canReadCache = (mode == CacheMode.UseCache);
+            var canWriteCache = (mode != CacheMode.Bypass);
+
             // 1) Cached resolved path?
-            if (cache.TryGetValue<string>(ResolveCacheKey(cid, inputLower), out var cachedResolved))
+            if (canReadCache && cache.TryGetValue<string>(ResolveCacheKey(cid, inputLower), out var cachedResolved))
             {
                 correctedPath = cachedResolved;
+
                 if (cache.TryGetValue<bool>(ExistsCacheKey(cid, cachedResolved), out var existsCached))
                     return (existsCached, correctedPath);
 
                 var existsHead = await PathExistsHeadAsync(cid, cachedResolved, gatewayPort, factory);
-                cache.Set(ExistsCacheKey(cid, cachedResolved), existsHead, new MemoryCacheEntryOptions
+                if (canWriteCache)
                 {
-                    AbsoluteExpirationRelativeToNow = ttl
-                }.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid)));
-
+                    cache.Set(
+                        ExistsCacheKey(cid, cachedResolved),
+                        existsHead,
+                        Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid)
+                    );
+                }
                 return (existsHead, correctedPath);
             }
 
@@ -127,46 +224,193 @@ namespace TruthGate_Web.Utils
             {
                 correctedPath = input;
 
-                cache.Set(ResolveCacheKey(cid, inputLower), correctedPath, new MemoryCacheEntryOptions
+                if (canWriteCache)
                 {
-                    AbsoluteExpirationRelativeToNow = ttl
-                }.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid)));
+                    cache.Set(
+                        ResolveCacheKey(cid, inputLower),
+                        correctedPath,
+                        Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid)
+                    );
 
-                cache.Set(ExistsCacheKey(cid, correctedPath), true, new MemoryCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = ttl
-                }.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid)));
-
+                    cache.Set(
+                        ExistsCacheKey(cid, correctedPath),
+                        true,
+                        Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid)
+                    );
+                }
                 return (true, correctedPath);
             }
 
             // 3) Slow: case-insensitive walk
-            var resolved = await ResolvePathCaseInsensitiveAsync(cid, input, factory, cache, ttl);
+            var resolved = await ResolvePathCaseInsensitiveAsync(cid, input, factory, cache, ttl, mode);
             if (resolved is null)
             {
-                cache.Set(ResolveCacheKey(cid, inputLower), "", new MemoryCacheEntryOptions
+                if (canWriteCache)
                 {
-                    AbsoluteExpirationRelativeToNow = ttl
-                }.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid)));
-
+                    cache.Set(
+                        ResolveCacheKey(cid, inputLower),
+                        "",
+                        Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid)
+                    );
+                }
                 return (false, null);
             }
 
             var ok = await PathExistsHeadAsync(cid, resolved, gatewayPort, factory);
             correctedPath = ok ? resolved : null;
 
-            cache.Set(ResolveCacheKey(cid, inputLower), correctedPath ?? "", new MemoryCacheEntryOptions
+            if (canWriteCache)
             {
-                AbsoluteExpirationRelativeToNow = ttl
-            }.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid)));
+                cache.Set(
+                    ResolveCacheKey(cid, inputLower),
+                    correctedPath ?? "",
+                    Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid)
+                );
 
-            cache.Set(ExistsCacheKey(cid, resolved), ok, new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = ttl
-            }.AddExpirationToken(IpfsCacheIndex.GetCidToken(cid)));
+                cache.Set(
+                    ExistsCacheKey(cid, resolved),
+                    ok,
+                    Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid)
+                );
+            }
 
             return (ok, correctedPath);
         }
+
+        public static async Task<string?> GetCidForMfsPathAsync(
+    string mfsFolderPath, IHttpClientFactory factory, IMemoryCache cache, TimeSpan ttl,
+    CacheMode mode = CacheMode.UseCache)
+        {
+            mfsFolderPath = NormalizeMfs(mfsFolderPath);
+
+            if (mode == CacheMode.UseCache)
+                return await ResolveMfsFolderToCidCachedAsync(mfsFolderPath, factory, cache, ttl);
+
+            // Bypass/Refresh -> hit the node directly
+            var cid = await ResolveMfsFolderToCidAsync(mfsFolderPath, factory);
+
+            if (mode == CacheMode.Refresh && !string.IsNullOrWhiteSpace(cid))
+            {
+                cache.Set(DomainCidCacheKey(mfsFolderPath), cid!,
+                    Tag(new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl }, cid: cid, mfsPath: mfsFolderPath));
+            }
+
+            return cid;
+        }
+
+        private static IEnumerable<string> EnumerateMfsAncestors(string mfsPath, bool includeSelf = true)
+        {
+            var p = NormalizeMfs(mfsPath);
+            if (includeSelf) yield return p;
+
+            while (p != "/")
+            {
+                var lastSlash = p.LastIndexOf('/');
+                p = lastSlash <= 0 ? "/" : p.Substring(0, lastSlash);
+                yield return p;
+            }
+        }
+
+        private static void InvalidateMfsCascade(string mfsPath)
+        {
+            foreach (var a in EnumerateMfsAncestors(mfsPath, includeSelf: true))
+                IpfsCacheIndex.InvalidateMfs(a);
+        }
+
+
+        public static async Task<string> EnsureMfsFolderExistsAsync(
+    string mfsFolderPath, IHttpClientFactory factory, bool aggressiveGlobalInvalidate = false)
+        {
+            mfsFolderPath = NormalizeMfs(mfsFolderPath);
+            var existing = await ResolveMfsFolderToCidAsync(mfsFolderPath, factory);
+            if (!string.IsNullOrWhiteSpace(existing)) return existing!;
+
+            var client = factory.CreateClient();
+            var mkUrl = $"http://127.0.0.1:5001/api/v0/files/mkdir?arg={Uri.EscapeDataString(mfsFolderPath)}&parents=true";
+
+            using (var mkReq = new HttpRequestMessage(HttpMethod.Post, mkUrl))
+            using (var mkRes = await client.SendAsync(mkReq))
+            {
+                if (!mkRes.IsSuccessStatusCode)
+                    throw new InvalidOperationException($"mkdir failed for '{mfsFolderPath}' ({(int)mkRes.StatusCode})");
+            }
+
+            var after = await ResolveMfsFolderToCidAsync(mfsFolderPath, factory);
+            if (string.IsNullOrWhiteSpace(after))
+                throw new InvalidOperationException($"mkdir succeeded but stat failed for '{mfsFolderPath}'");
+
+            // Targeted: invalidate MFS→CID for this path and all parents (so new CIDs will be fetched)
+            InvalidateMfsCascade(mfsFolderPath);
+
+            // (optional) go-nuclear if you want: blow everything
+            if (aggressiveGlobalInvalidate) IpfsCacheIndex.InvalidateAll();
+
+            return after!;
+        }
+
+
+        // Convenience for “create by names” under a base path, return end CID.
+        public static Task<string> EnsureMfsFolderPathAsync(
+            string baseFolder, IEnumerable<string> names, IHttpClientFactory factory)
+        {
+            baseFolder = NormalizeMfs(baseFolder);
+            var tail = string.Join("/", (names ?? Array.Empty<string>())
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s.Trim('/')));
+            var full = NormalizeMfs(baseFolder.TrimEnd('/') + "/" + tail);
+            return EnsureMfsFolderExistsAsync(full, factory);
+        }
+
+        public static async Task<string> RenameMfsLeafAsync(
+     string currentPath, string newLeafName, IHttpClientFactory factory, bool overwriteIfExists = false,
+     bool aggressiveGlobalInvalidate = false)
+        {
+            currentPath = NormalizeMfs(currentPath);
+            newLeafName = (newLeafName ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(newLeafName))
+                throw new ArgumentException("New leaf name is required.", nameof(newLeafName));
+
+            var srcCid = await ResolveMfsFolderToCidAsync(currentPath, factory);
+            if (string.IsNullOrWhiteSpace(srcCid))
+                throw new FileNotFoundException($"MFS path not found: {currentPath}");
+
+            var slash = currentPath.LastIndexOf('/');
+            var parent = slash <= 0 ? "/" : currentPath.Substring(0, slash);
+            var dest = NormalizeMfs((parent.EndsWith("/") ? parent : parent + "/") + newLeafName);
+
+            var client = factory.CreateClient();
+
+            if (overwriteIfExists)
+            {
+                var rmUrl = $"http://127.0.0.1:5001/api/v0/files/rm?arg={Uri.EscapeDataString(dest)}&recursive=true";
+                using var rmReq = new HttpRequestMessage(HttpMethod.Post, rmUrl);
+                using var rmRes = await client.SendAsync(rmReq);
+                // ignore non-2xx; dest might not exist
+            }
+
+            var mvUrl = $"http://127.0.0.1:5001/api/v0/files/mv?arg={Uri.EscapeDataString(currentPath)}&arg={Uri.EscapeDataString(dest)}&parents=true";
+            using (var mvReq = new HttpRequestMessage(HttpMethod.Post, mvUrl))
+            using (var mvRes = await client.SendAsync(mvReq))
+            {
+                if (!mvRes.IsSuccessStatusCode)
+                    throw new IOException($"Rename failed: {currentPath} -> {dest} ({(int)mvRes.StatusCode})");
+            }
+
+            var newCid = await ResolveMfsFolderToCidAsync(dest, factory);
+            if (string.IsNullOrWhiteSpace(newCid))
+                throw new IOException($"Rename succeeded but stat failed for destination: {dest}");
+
+            // Targeted: invalidate MFS maps for source path, dest path, and their parents
+            InvalidateMfsCascade(currentPath);
+            InvalidateMfsCascade(dest);
+
+            // Optionally nuke everything
+            if (aggressiveGlobalInvalidate) IpfsCacheIndex.InvalidateAll();
+
+            return newCid!;
+        }
+
+
 
         // ----- MFS folder → root CID (with cache), and local presence checks -----
         public static async Task<string?> ResolveMfsFolderToCidCachedAsync(
