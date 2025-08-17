@@ -14,11 +14,30 @@ namespace TruthGate_Web.Extensions
     ([FromRoute] string token, [FromServices] IAcmeChallengeStore store)
         => Results.Text(store.TryGetContent(token) ?? "", "text/plain"));
 
-            app.MapPost("/_acme/issue/{host}", ([FromRoute] string host, [FromServices] LiveCertProvider live) =>
-            {
-                live.QueueIssueIfMissing(host.Trim().ToLowerInvariant());
-                return Results.Ok(new { queued = host });
-            });
+            app.MapPost("/_acme/issue/{host}",
+     ([FromRoute] string host, [FromServices] LiveCertProvider live) =>
+     {
+         host = (host ?? "").Trim().ToLowerInvariant();
+         if (string.IsNullOrWhiteSpace(host)) return Results.BadRequest("host required");
+
+         live.QueueIssueIfMissing(host);
+         return Results.Ok(new { queued = host });
+     });
+
+            app.MapGet("/_acme/status/{host}",
+                async ([FromRoute] string host, [FromServices] ICertificateStore store) =>
+                {
+                    host = (host ?? "").Trim().ToLowerInvariant();
+                    var cert = await store.LoadAsync(host, default);
+                    if (cert is null) return Results.Ok(new { host, exists = false });
+
+                    return Results.Ok(new
+                    {
+                        host,
+                        exists = true,
+                        notAfter = cert.GetExpirationDateString()
+                    });
+                });
 
             if (app.Environment.IsDevelopment())
             {
