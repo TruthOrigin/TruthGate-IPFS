@@ -26,7 +26,8 @@ namespace TruthGate_Web.Middleware
 
                     // Always bypass /login and /auth
                     if (path.StartsWith("/login") || path.StartsWith("/auth") || path.StartsWith("/api")
-                    || path.StartsWith("/_content") || path.StartsWith("/_framework"))
+                    || path.StartsWith("/_content") || path.StartsWith("/_framework")
+                    || path.StartsWith("/.well-known") || path.StartsWith("/_acme"))
                     {
                         if (ctx.Request.Path.Equals("/login", StringComparison.OrdinalIgnoreCase)
                             && (ctx.User.Identity?.IsAuthenticated ?? false))
@@ -39,14 +40,6 @@ namespace TruthGate_Web.Middleware
                         await next();
                         return;
                     }
-
-#if DEBUG
-                    if (path.StartsWith("/.well-known"))
-                    {
-                        await next();
-                        return;
-                    }
-#endif
 
                     // If it's a file in wwwroot, bypass
                     if (IsRequestingWwwrootFile(env, path))
