@@ -3,6 +3,7 @@ using Microsoft.Extensions.Primitives;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using TruthGate_Web.Endpoints;
+using TruthGate_Web.Services;
 
 namespace TruthGate_Web.Utils
 {
@@ -66,13 +67,13 @@ namespace TruthGate_Web.Utils
             string cid,
             int version,
             string baseEncoding,
-            IHttpClientFactory clientFactory)
+            IHttpClientFactory clientFactory, IApiKeyProvider keys)
         {
             // Build the IPFS API REST (not a full URL!) that your proxy will forward.
             // Example: /api/v0/cid/format?arg=<cid>&v=1&b=base32
             var rest = $"/api/v0/cid/format?arg={Uri.EscapeDataString(cid)}&v={version}&b={Uri.EscapeDataString(baseEncoding)}";
 
-            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, clientFactory);
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, clientFactory, keys);
             if (!res.IsSuccessStatusCode) return null;
 
             var text = await res.Content.ReadAsStringAsync();

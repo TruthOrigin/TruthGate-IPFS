@@ -15,7 +15,7 @@ namespace TruthGate_Web.Endpoints
         /// </summary>
         public static async Task<HttpResponseMessage> SendProxyApiRequest(
         string rest,
-        IHttpClientFactory clientFactory)
+        IHttpClientFactory clientFactory, IApiKeyProvider keys)
         {
             // fake up an HttpContext the proxy can use
             var context = new DefaultHttpContext();
@@ -24,6 +24,8 @@ namespace TruthGate_Web.Endpoints
             context.Request.Method = "POST";     // ipfs endpoints usually accept POST
             context.Request.Scheme = "http";     // adjust if your RequestHelpers cares
                                                  // context.Request.Host = ... only if your RequestHelpers actually reads it
+
+            context.Request.Headers["X-API-Key"] = keys.GetCurrentKey();
 
             // capture response into memory
             var bodyStream = new MemoryStream();
@@ -59,7 +61,7 @@ namespace TruthGate_Web.Endpoints
         public static IEndpointRouteBuilder MapTruthGateApiProxyEndpoints(this IEndpointRouteBuilder app)
         {
             // CORS preflight first (optional, order usually doesn't matter with explicit MapMethods)
-            app.MapMethods("/api/{**rest}", new[] { "OPTIONS" }, async context =>
+            app.MapMethods("/api/v0/{**rest}", new[] { "OPTIONS" }, async context =>
             {
                 context.Response.StatusCode = StatusCodes.Status204NoContent;
                 context.Response.Headers["Access-Control-Allow-Origin"] = "*";
@@ -68,26 +70,44 @@ namespace TruthGate_Web.Endpoints
                 await context.Response.CompleteAsync();
             });
 
-            app.Map("/api/{**rest}", async (HttpContext context, string rest, IHttpClientFactory clientFactory, IConfigService cfgSvc) =>
+            app.Map("/api/v0/{**rest}", async (HttpContext context, string rest,
+    IHttpClientFactory clientFactory, IApiKeyProvider internalKey,
+    IConfigService cfgSvc) =>
             {
-                // 1) Pull plaintext key from header or query
-                var providedKey =
+                // 1) Pull plaintext key from header, query, or Authorization: Bearer
+                string? providedKey =
                     context.Request.Headers["X-API-Key"].FirstOrDefault()
                     ?? context.Request.Query["api_key"].FirstOrDefault()
                     ?? context.Request.Query["key"].FirstOrDefault();
 
+                if (string.IsNullOrWhiteSpace(providedKey))
+                {
+                    var auth = context.Request.Headers.Authorization.ToString();
+                    const string bearerPrefix = "Bearer ";
+                    if (!string.IsNullOrEmpty(auth) && auth.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+                        providedKey = auth.Substring(bearerPrefix.Length).Trim();
+                }
+
                 bool keyAccepted = false;
 
-                // 2) Validate against hashed keys in config (if any)
+                // 2) Validate against hashed keys in config (if any) OR the in-memory rotating key
                 var cfg = cfgSvc.Get();
                 var keys = cfg.ApiKeys ?? new List<ApiKey>();
 
-                if (!string.IsNullOrWhiteSpace(providedKey) && keys.Count > 0)
+                if (!string.IsNullOrWhiteSpace(providedKey))
                 {
-                    // Any stored hashed key that verifies wins
-                    keyAccepted = keys.Any(k =>
+                    // (a) any stored hashed key that verifies
+                    if (keys.Count > 0 && keys.Any(k =>
                         !string.IsNullOrWhiteSpace(k?.KeyHashed) &&
-                        StringHasher.VerifyHash(providedKey, k.KeyHashed));
+                        StringHasher.VerifyHash(providedKey!, k.KeyHashed)))
+                    {
+                        keyAccepted = true;
+                    }
+                    // (b) OR the current in-memory key
+                    else if (internalKey.IsValid(providedKey))
+                    {
+                        keyAccepted = true;
+                    }
                 }
 
                 // 3) If key not accepted, allow cookie-authenticated users
@@ -113,6 +133,7 @@ namespace TruthGate_Web.Endpoints
                 var targetUri = RequestHelpers.CombineTarget("api", rest, context);
                 await IpfsGateway.Proxy(context, targetUri, clientFactory);
             });
+
 
             return app;
         }

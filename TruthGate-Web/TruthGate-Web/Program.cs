@@ -29,6 +29,11 @@ builder.Services.AddScoped(sp =>
     return new HttpClient { BaseAddress = new Uri(nav.BaseUri) };
 });
 
+builder.Services.AddSingleton<ApiKeyService>();
+builder.Services.AddSingleton<IApiKeyProvider>(sp => sp.GetRequiredService<ApiKeyService>());
+// same instance is used as the hosted service
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ApiKeyService>());
+
 
 builder.Services.AddServerSideBlazor()
     .AddCircuitOptions(o => o.DetailedErrors = true);
@@ -38,7 +43,7 @@ builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<ICo
 
 builder.Services.AddMudServices();
 builder.Services.AddBlazoredLocalStorage();
-
+builder.Services.AddControllers();
 
 if (!builder.Environment.IsDevelopment())
 {
@@ -192,6 +197,7 @@ app.UseAntiforgery();
 app.UseBlazorFrameworkFiles();
 app.UseStaticFiles();
 
+app.MapControllers();
 
 // Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
 app.UseDomainGateway();

@@ -5,7 +5,7 @@
 @typeparam T
 @implements IAsyncDisposable
 @inject IHttpClientFactory HttpFactory
-
+@inject IApiKeyProvider keys
 <MudCard Class="mx-auto" Style="max-width: 210px; height: 210px; display:flex; align-items:center; justify-content:center; padding:10px;">
     <div style="text-align:center;">
         <MudText Typo="Typo.h4" Color="Color.Primary" Class="mb-1">@Title</MudText>
@@ -87,7 +87,7 @@
         {
             Error = null;
 
-            using var resp = await ApiProxyEndpoints.SendProxyApiRequest(Endpoint, HttpFactory);
+            using var resp = await ApiProxyEndpoints.SendProxyApiRequest(Endpoint, HttpFactory, keys);
             resp.EnsureSuccessStatusCode();
 
             var data = await resp.Content.ReadFromJsonAsync<T>(JsonOpts, _cts.Token);

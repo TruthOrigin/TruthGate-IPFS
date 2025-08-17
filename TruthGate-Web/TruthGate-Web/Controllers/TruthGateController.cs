@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using TruthGate_Web.Models.ControllerResponses;
+using TruthGate_Web.Services;
 using TruthGate_Web.Utils;
 
 namespace TruthGate_Web.Controllers
@@ -10,10 +12,12 @@ namespace TruthGate_Web.Controllers
     public sealed class TruthGateController : ControllerBase
     {
         private readonly IHttpClientFactory _http;
+        private readonly IApiKeyProvider _keys;
 
-        public TruthGateController(IHttpClientFactory http)
+        public TruthGateController(IHttpClientFactory http, IApiKeyProvider keys)
         {
             _http = http;
+            _keys = keys;
         }
 
         // GET /api/truthgate/v1/GetDomainCid
@@ -47,19 +51,15 @@ namespace TruthGate_Web.Controllers
                 return NotFound(new { host, searched = new[] { pathExact, pathLower }, error = "site not found" });
 
             // Convert to both v1 (base32) and v0 (base58btc) via proxy-backed formatter
-            var cidv1 = await IpfsGateway.FormatCidAsync(cid!, version: 1, baseEncoding: "base32", clientFactory: _http);
-            var cidv0 = await IpfsGateway.FormatCidAsync(cid!, version: 0, baseEncoding: "base58btc", clientFactory: _http);
+            var cidv1 = await IpfsGateway.FormatCidAsync(cid!, version: 1, baseEncoding: "base32", clientFactory: _http, keys: _keys);
+            var cidv0 = await IpfsGateway.FormatCidAsync(cid!, version: 0, baseEncoding: "base58btc", clientFactory: _http, keys: _keys);
 
-            var payload = new
+            return Ok(new DomainCid()
             {
-                domain = host,
-                mfsPath = chosenPath,
-                cidOriginal = cid,
-                cidv0,
-                cidv1
-            };
-
-            return Ok(payload);
+                Domain = host,
+                CidV0 = cidv0,
+                CidV1 = cidv1
+            });
         }
     }
 }
