@@ -66,12 +66,12 @@
             <MudTd>
                 @if (context.IsManaged)
                 {
-                    <MudChip T="string" Color="Color.Success" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Folder">/production/pinned</MudChip>
+                    <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Folder">/production/pinned</MudChip>
                 }
                 else if (context.IsProductionNonManaged)
                 {
                     <MudTooltip Text="This pinned CID is under /production but not managed by /production/pinned. Deleting here is disabled.">
-                        <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Error">/production (external)</MudChip>
+                        <MudChip T="string" Color="Color.Secondary" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Error">/production (external)</MudChip>
                     </MudTooltip>
                 }
                 else
@@ -152,53 +152,65 @@
         {
             _loading = true;
 
-            // 1) Get recursive pins (top-level)
+            // 1) Top-level recursive pins
             var pins = await ListRecursivePinsAsync();
 
-            // 2) Snapshot immediate children of /production and /production/pinned (Name -> (CID, Path))
-            var prodMap = await ListMfsChildrenAsync(ProductionRoot);
+            // 2) Snapshot immediate children maps
             var pinnedMap = await ListMfsChildrenAsync(ManagedRoot);
 
-            // 3) Build rows; try map each CID to an MFS path
+            // 2a) Normalize pinned map to v1 for O(1) lookup
+            var pinnedByCidV1 = new Dictionary<string, (string Name, string Path)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in pinnedMap)
+            {
+                var name = kv.Key;
+                var (cid, _) = kv.Value;
+                var cidV1Key = await NormalizeCidV1Async(cid);
+                var path = IpfsGateway.NormalizeMfs($"{ManagedRoot}/{name}");
+                // If duplicates somehow occur, keep the first
+                if (!pinnedByCidV1.ContainsKey(cidV1Key))
+                    pinnedByCidV1[cidV1Key] = (name, path);
+            }
+
+            // 2b) Build a CID→path index for /production and /production/*/*
+            var prodIndex = await BuildProductionCidIndexAsync(); // already normalized to v1
+
+            // 3) Build rows; try to map each pin
             var rows = new List<PinnedRow>(pins.Count);
 
-            foreach (var cid in pins)
+            foreach (var rawCid in pins)
             {
+                var cidV1 = await NormalizeCidV1Async(rawCid);
+
                 string? mfsPath = null;
                 string? name = null;
                 bool isManaged = false;
                 bool isProdOther = false;
 
-                // Try exact in /production/pinned
-                var pinnedHit = pinnedMap.FirstOrDefault(kv =>
-                    string.Equals(kv.Value.Cid, cid, StringComparison.OrdinalIgnoreCase));
-
-                if (pinnedHit.Key is not null)
+                // A) Check /production/pinned direct children first (managed)
+                if (pinnedByCidV1.TryGetValue(cidV1, out var pinnedHit))
                 {
-                    name = pinnedHit.Key;
-                    mfsPath = IpfsGateway.NormalizeMfs($"{ManagedRoot}/{name}");
+                    name = pinnedHit.Name;
+                    mfsPath = pinnedHit.Path;
                     isManaged = true;
                 }
                 else
                 {
-                    // Try exact among /production direct children (not pinned)
-                    var prodHit = prodMap.FirstOrDefault(kv =>
-                        string.Equals(kv.Value.Cid, cid, StringComparison.OrdinalIgnoreCase));
-
-                    if (prodHit.Key is not null)
+                    // B) Check production index (covers immediate and first-level under /production/*)
+                    if (prodIndex.TryGetValue(cidV1, out var entry))
                     {
-                        name = prodHit.Key;
-                        mfsPath = IpfsGateway.NormalizeMfs($"{ProductionRoot}/{name}");
-                        isProdOther = !mfsPath.StartsWith(ManagedRoot, StringComparison.OrdinalIgnoreCase);
+                        name = entry.Name;
+                        mfsPath = entry.Path;
+                        isProdOther = !mfsPath.StartsWith(ManagedRoot, StringComparison.OrdinalIgnoreCase)
+                                      && mfsPath.StartsWith(ProductionRoot, StringComparison.OrdinalIgnoreCase);
                     }
                 }
 
-                // Size: prefer MFS stat when we have a path; else DAG stat; fallback block size
+                // Size: prefer MFS stat when we have a path; else DAG/Block stats
                 long? size = null;
                 if (!string.IsNullOrWhiteSpace(mfsPath))
                     size = await TryMfsCumulativeSizeAsync(mfsPath);
                 if (size is null)
-                    size = await TryDagSizeAsync(cid) ?? await TryBlockSizeAsync(cid);
+                    size = await TryDagSizeAsync(rawCid) ?? await TryBlockSizeAsync(rawCid);
 
                 var canDelete = isManaged; // only managed entries deletable from this UI
                 var reason = canDelete ? null :
@@ -208,7 +220,7 @@
 
                 rows.Add(new PinnedRow
                     {
-                        Cid = cid,
+                        Cid = rawCid,
                         Name = name,
                         MfsPath = mfsPath,
                         IsManaged = isManaged,
@@ -220,7 +232,7 @@
             }
 
             _all = rows
-                .OrderByDescending(r => r.IsManaged) // bubble managed to top
+                .OrderByDescending(r => r.IsManaged)
                 .ThenBy(r => r.Name ?? r.Cid, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
@@ -234,6 +246,7 @@
             StateHasChanged();
         }
     }
+
 
     private async Task OnAddPinned()
     {
@@ -536,6 +549,62 @@
         public bool CanDelete { get; init; }
         public string? DeleteDisabledReason { get; init; }
     }
+    // Normalizes ANY cid (v0/v1) to v1 base32 using your proxy.
+    // Caches results so we don't hammer the node while building indexes.
+    private readonly Dictionary<string, string> _cidV1Cache = new(StringComparer.OrdinalIgnoreCase);
 
+    private async Task<string> NormalizeCidV1Async(string cid)
+    {
+        if (string.IsNullOrWhiteSpace(cid)) return cid;
+        if (_cidV1Cache.TryGetValue(cid, out var cached)) return cached;
+
+        var rest = $"/api/v0/cid/format?arg={Uri.EscapeDataString(cid)}&v=1&b=base32";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+        {
+            // Fallback: if format fails, keep the original (match best-effort)
+            _cidV1Cache[cid] = cid;
+            return cid;
+        }
+        var v = (await res.Content.ReadAsStringAsync()).Trim();
+        _cidV1Cache[cid] = v;
+        return v;
+    }
+
+    private sealed record MfsEntry(string Name, string Path, string CidV1);
+
+    private async Task<Dictionary<string, MfsEntry>> BuildProductionCidIndexAsync()
+    {
+        var index = new Dictionary<string, MfsEntry>(StringComparer.OrdinalIgnoreCase);
+
+        // 1) /production (immediate)
+        var prodChildren = await ListMfsChildrenAsync(ProductionRoot);
+        foreach (var kv in prodChildren)
+        {
+            var name = kv.Key;
+            var (cid, path) = kv.Value;
+            var cidV1 = await NormalizeCidV1Async(cid);
+            index[cidV1] = new MfsEntry(name, path, cidV1);
+        }
+
+        // 2) First-level directories beneath /production (e.g., /production/sites/*)
+        // We only descend into children that are *directories*. files/ls doesn't always mark type consistently,
+        // so we just try listing their children; if it fails, we skip.
+        foreach (var (_, child) in prodChildren)
+        {
+            // child.Path is /production/<something>
+            var subChildren = await ListMfsChildrenAsync(child.Path);
+            foreach (var skv in subChildren)
+            {
+                var sname = skv.Key;
+                var (scid, spath) = skv.Value;
+                var scidV1 = await NormalizeCidV1Async(scid);
+                // Prefer a specific match; don’t overwrite an existing key
+                index.TryAdd(scidV1, new MfsEntry(sname, spath, scidV1));
+            }
+        }
+
+        return index;
+    }
 
 }
