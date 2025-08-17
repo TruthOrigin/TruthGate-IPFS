@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using System.IO;
 using System.Net;
 using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
@@ -27,7 +28,8 @@ namespace TruthGate_Web.Middleware
 
             // keep /api and /auth exceptions
             var p = (ctx.Request.Path.Value ?? "").ToLowerInvariant();
-            if (p.StartsWith("/api") || p.StartsWith("/auth"))
+            if (p.StartsWith("/api") || p.StartsWith("/auth")
+                || p.StartsWith("/.well-known") || p.StartsWith("/_acme"))
             {
                 await next();
                 return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
