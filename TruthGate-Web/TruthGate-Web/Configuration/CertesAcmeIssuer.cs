@@ -127,7 +127,7 @@ namespace TruthGate_Web.Configuration
                 var chain = await order.Download();
 
                 // PARAMETERLESS ToPem → LEAF+INTERMEDIATES as PEM. No issuer lookup.
-                var pemChain = chain.ToPem();
+                var pemChain = Certes.CertificateChainExtensions.ToPem(chain);
 
                 static IEnumerable<string> SplitPem(string pemAll)
                 {

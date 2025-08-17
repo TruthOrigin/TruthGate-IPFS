@@ -17,7 +17,10 @@
                                Label="@(_model.UseSSL ? "Enabled" : "Disabled")"
                                 />
                 </div>
-                <MudText Class="ml-2" Typo="Typo.body2">Use SSL</MudText>
+                <MudText Class="ml-2" Typo="Typo.body2">
+                    When enabled, TruthGate provisions a valid Let’s Encrypt certificate for this domain.
+                    When disabled, a self-signed certificate is used (still HTTPS), intended for use behind infra like Cloudflare.
+                </MudText>
             </div>
 
             @if (!string.IsNullOrEmpty(_error))
