@@ -38,64 +38,44 @@ namespace TruthGate_Web.Configuration
             {
                 _logger.LogInformation("ACME[{Dir}] start {Host}", Label, host);
 
-                // 1) ACME context + (create or reuse) account
+                // 1) ACME context + account
                 var accountKey = await LoadOrCreateAccountKeyAsync(ct);
                 var acme = new AcmeContext(_dirUri, accountKey);
-
-                try { await acme.NewAccount(Array.Empty<string>(), termsOfServiceAgreed: true); }
+                try { await acme.NewAccount(Array.Empty<string>(), true); }
                 catch { _logger.LogDebug("ACME[{Dir}] account exists", Label); }
 
-                // 2) Order and authorizations
+                // 2) Create order & validate HTTP-01
                 var order = await acme.NewOrder(new[] { host });
                 _logger.LogInformation("ACME[{Dir}] order created for {Host}", Label, host);
 
                 var authzs = await order.Authorizations();
                 foreach (var authz in authzs)
                 {
-                    ct.ThrowIfCancellationRequested();
-
                     var http = await authz.Http();
                     var token = http.Token;
                     var keyAuthz = http.KeyAuthz;
                     var url = $"http://{host}/.well-known/acme-challenge/{token}";
 
-                    _logger.LogInformation("ACME[{Dir}] token URL {Url}", Label, url);
-                    _logger.LogInformation("ACME[{Dir}] expected keyAuthz for {Host}: {Key}", Label, host, keyAuthz);
-
-                    // Preflight (no redirects, no transforms)
+                    // Preflight (best-effort)
                     try
                     {
-                        using var hc = new HttpClient(new HttpClientHandler
-                        {
-                            AllowAutoRedirect = false,
-                            AutomaticDecompression = System.Net.DecompressionMethods.None
-                        })
-                        {
-                            Timeout = TimeSpan.FromSeconds(5)
-                        };
+                        using var hc = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+                        hc.Timeout = TimeSpan.FromSeconds(5);
                         var resp = await hc.GetAsync(url, ct);
                         var body = await resp.Content.ReadAsStringAsync(ct);
                         _logger.LogInformation("Preflight GET {Url} -> {Status} len={Len}", url, (int)resp.StatusCode, body.Length);
                         if (resp.StatusCode == System.Net.HttpStatusCode.OK && !string.Equals(body, keyAuthz, StringComparison.Ordinal))
                             _logger.LogWarning("Preflight mismatch: body != keyAuthz (first 60) body='{Body}'", body.Length > 60 ? body[..60] : body);
-                        if (resp.StatusCode != System.Net.HttpStatusCode.OK)
-                            _logger.LogWarning("Preflight not 200: {Code}", (int)resp.StatusCode);
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Preflight GET failed (firewall/proxy/redirect?)");
-                    }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Preflight GET failed"); }
 
-                    // Place token, ask ACME to validate
                     _challengeStore.Put(token, keyAuthz, TimeSpan.FromMinutes(10));
                     await http.Validate();
 
-                    // Poll the challenge for a clear result (VALID/INVALID)
                     var chDeadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
                     while (true)
                     {
                         ct.ThrowIfCancellationRequested();
-
                         var chRes = await http.Resource();
                         if (chRes.Status == ChallengeStatus.Valid)
                         {
@@ -103,25 +83,19 @@ namespace TruthGate_Web.Configuration
                             break;
                         }
                         if (chRes.Status == ChallengeStatus.Invalid)
-                        {
-                            _logger.LogError("ACME[{Dir}] challenge INVALID for {Host}. Type={Type} Detail={Detail}",
-                                Label, host, chRes.Error?.Type, chRes.Error?.Detail);
                             throw new InvalidOperationException($"ACME authorization failed for {host}: {chRes.Error?.Type} {chRes.Error?.Detail}");
-                        }
                         if (DateTimeOffset.UtcNow > chDeadline)
                             throw new TimeoutException($"ACME challenge timed out for {host}");
-
                         await Task.Delay(1000, ct);
                     }
 
                     _challengeStore.Remove(token);
                 }
 
-                // 3) Finalize the order (wait for READY), then wait for VALID, then download
+                // 3) Finalize order (poll to READY → finalize → poll to VALID)
                 var acctKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
                 var csrInfo = new CsrInfo { CommonName = host };
 
-                // Wait for READY (or already VALID)
                 var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
                 var oRes = await order.Resource();
                 while (oRes.Status is OrderStatus.Pending or OrderStatus.Processing)
@@ -134,11 +108,9 @@ namespace TruthGate_Web.Configuration
 
                 if (oRes.Status != OrderStatus.Valid)
                 {
-                    // Only finalize if not already valid
                     await order.Finalize(csrInfo, acctKey);
                 }
 
-                // Wait for VALID
                 deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
                 oRes = await order.Resource();
                 while (oRes.Status is OrderStatus.Processing or OrderStatus.Pending or OrderStatus.Ready)
@@ -151,13 +123,12 @@ namespace TruthGate_Web.Configuration
                 if (oRes.Status != OrderStatus.Valid)
                     throw new InvalidOperationException($"ACME order did not become valid for {host} (status={oRes.Status}).");
 
-                // Download full chain
+                // 4) Download chain and build PFX WITHOUT using key-bound ToPem
                 var chain = await order.Download();
 
-                // IMPORTANT: use parameterless ToPem() so Certes does NOT try to resolve issuers
+                // PARAMETERLESS ToPem → LEAF+INTERMEDIATES as PEM. No issuer lookup.
                 var pemChain = chain.ToPem();
 
-                // 4) Build a PKCS#12 (PFX) manually to avoid staging "Pretend Pear" issuer lookups
                 static IEnumerable<string> SplitPem(string pemAll)
                 {
                     const string begin = "-----BEGIN CERTIFICATE-----";
@@ -184,14 +155,12 @@ namespace TruthGate_Web.Configuration
 
                 var leafPublic = X509CertificateLoader.LoadCertificate(Encoding.ASCII.GetBytes(leafPem));
 
-                // Bind ES256 private key to leaf
                 using var ecdsa = ECDsa.Create();
                 ecdsa.ImportPkcs8PrivateKey(acctKey.ToDer(), out _);
                 var leafWithKey = leafPublic.CopyWithPrivateKey(ecdsa);
 
                 var pfxBuilder = new Pkcs12Builder();
 
-                // Bag A: leaf + shrouded key
                 var leafBag = new Pkcs12SafeContents();
                 leafBag.AddCertificate(leafWithKey);
                 leafBag.AddShroudedKey(
@@ -201,7 +170,6 @@ namespace TruthGate_Web.Configuration
                 );
                 pfxBuilder.AddSafeContentsUnencrypted(leafBag);
 
-                // Bag B: intermediates
                 if (interPem.Count > 0)
                 {
                     var interBag = new Pkcs12SafeContents();
@@ -217,8 +185,6 @@ namespace TruthGate_Web.Configuration
                 var pfxBytes = pfxBuilder.Encode();
 
                 _logger.LogInformation("ACME[{Dir}] issued PFX for {Host} (len={Len})", Label, host, pfxBytes.Length);
-
-                // Load with modern loader (non-obsolete)
                 return X509CertificateLoader.LoadPkcs12(pfxBytes, ReadOnlySpan<char>.Empty);
             }
             catch (Exception ex)
