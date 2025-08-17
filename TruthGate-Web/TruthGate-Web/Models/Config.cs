@@ -46,6 +46,7 @@
     {
         public string Domain { get; set; }
         public string UseSSL { get; set; }
+        public string? RedirectUrl { get; set; }
     }
 
     public class ApiKey

@@ -56,6 +56,33 @@ namespace TruthGate_Web.Utils
             return "/" + basePath + "/" + match.Domain.Trim();
         }
 
+        public static string? GetRedirectUrl(HttpContext ctx)
+        {
+            var configSvc = ctx.RequestServices.GetRequiredService<IConfigService>();
+
+            var hostToMatch = GetEffectiveHost(ctx);
+            if (string.IsNullOrWhiteSpace(hostToMatch))
+                return null;
+
+            // If it's an IP address request, skip mapping
+            if (IPAddress.TryParse(hostToMatch, out _))
+                return null;
+
+            var cfg = configSvc.Get();
+            if (cfg?.Domains == null || cfg.Domains.Count == 0)
+                return null;
+
+            // Case-insensitive match against EdgeDomain.Domain
+            var match = cfg.Domains.FirstOrDefault(d =>
+                !string.IsNullOrWhiteSpace(d?.Domain) &&
+                string.Equals(d.Domain.Trim(), hostToMatch.Trim(), StringComparison.OrdinalIgnoreCase));
+
+            if (match == null)
+                return null;
+
+            return match.RedirectUrl;
+        }
+
         /// <summary>
         /// Returns the effective host for the current request.
         /// - In Development, honors appsettings: DevEmulateHost (if present).

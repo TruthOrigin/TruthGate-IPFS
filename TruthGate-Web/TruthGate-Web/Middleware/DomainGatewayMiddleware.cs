@@ -26,6 +26,18 @@ namespace TruthGate_Web.Middleware
                 return new RunOnceResult(Handled: true, RetryCandidate: false, Cid: null, MfsPath: null);
             }
 
+            var redirectUrl = DomainHelpers.GetRedirectUrl(ctx);
+            if (!string.IsNullOrWhiteSpace(redirectUrl))
+            {
+                ctx.Response.Redirect(redirectUrl, permanent: false);
+                return new RunOnceResult(
+                    Handled: true,
+                    RetryCandidate: false,
+                    Cid: null,
+                    MfsPath: null
+                );
+            }
+
             // keep /api and /auth exceptions
             var p = (ctx.Request.Path.Value ?? "").ToLowerInvariant();
             if (p.StartsWith("/api") || p.StartsWith("/auth")

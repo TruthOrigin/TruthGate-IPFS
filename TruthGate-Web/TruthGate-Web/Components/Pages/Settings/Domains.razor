@@ -9,9 +9,20 @@
 @inject ISnackbar Snackbar
 @rendermode InteractiveServer
 
+<style>
+    .truncate-text {
+        display: block;
+        max-width: 190px; /* limit how wide it can grow */
+        white-space: nowrap; /* keep it on one line */
+        overflow: hidden; /* hide overflow */
+        text-overflow: ellipsis; /* show ... at the end */
+    }
+</style>
+
 <MudContainer Class="py-3" MaxWidth="MudBlazor.MaxWidth.Medium">
     <div class="flex items-center justify-between mb-4">
         <MudText Typo="Typo.h3">Domains</MudText>
+        <br />
         <MudButton Variant="Variant.Filled"
                    Color="Color.Primary"
                    StartIcon="@Icons.Material.Filled.DomainAdd"
@@ -24,6 +35,7 @@
         <HeaderContent>
             <MudTh>Domain</MudTh>
             <MudTh>Use SSL</MudTh>
+            <MudTh>Redirect</MudTh>
             <MudTh>Actions</MudTh>
         </HeaderContent>
 
@@ -37,6 +49,18 @@
                 else
                 {
                     <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.LockOpen">Disabled</MudChip>
+                }
+            </MudTd>
+            <MudTd DataLabel="Redirect">
+                @if (string.IsNullOrWhiteSpace(context.RedirectUrl))
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Error" />
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Class="truncate-text">
+                        @context.RedirectUrl
+                    </MudText>
                 }
             </MudTd>
             <MudTd>
@@ -84,7 +108,8 @@
             .Select(d => new EdgeDomain
             {
                 Domain = (d.Domain ?? string.Empty).Trim(),
-                UseSSL = (d.UseSSL ?? string.Empty).Trim()
+                UseSSL = (d.UseSSL ?? string.Empty).Trim(),
+                RedirectUrl = (d.RedirectUrl ?? string.Empty).Trim(),
             })
             .ToList();
 
@@ -119,7 +144,8 @@
             cfg.Domains.Add(new EdgeDomain
             {
                 Domain = normalized,
-                UseSSL = r.UseSSL ? "true" : "false"
+                UseSSL = r.UseSSL ? "true" : "false",
+                RedirectUrl = r.RedirectUrl?.Trim(),
             });
         });
 
@@ -164,6 +190,7 @@
             {
                 target.Domain = normalized;
                 target.UseSSL = r.UseSSL ? "true" : "false";
+                target.RedirectUrl = r.RedirectUrl?.Trim();
             }
         });
 

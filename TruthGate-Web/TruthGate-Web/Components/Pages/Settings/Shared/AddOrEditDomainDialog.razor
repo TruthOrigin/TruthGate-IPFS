@@ -23,6 +23,17 @@
                 </MudText>
             </div>
 
+            <MudTextField Label="Redirect URL"
+                          @bind-Value="_model.RedirectUrl"
+                          Immediate="true"
+                          Required="false"
+                          For="@(()=>_model.RedirectUrl)" />
+            <MudText Class="ml-2" Typo="Typo.body2">
+                Leave empty to serve this domain normally.
+                If a Redirect URL is set, all visitors will be instantly redirected there instead.
+            </MudText>
+
+
             @if (!string.IsNullOrEmpty(_error))
             {
                 <MudText Color="Color.Error" Class="mt-2">@_error</MudText>
@@ -61,12 +72,14 @@
     {
         public string Domain { get; set; } = "";
         public bool UseSSL { get; set; }
+        public string? RedirectUrl { get; set; }
     }
 
     private sealed class Model
     {
         public string Domain { get; set; } = "";
         public bool UseSSL { get; set; }
+        public string? RedirectUrl { get; set; }
     }
 
     private IEnumerable<string> Validate()
@@ -87,7 +100,8 @@
         var result = new DomainResult
         {
             Domain = _model.Domain,   // normalization happens on the page
-            UseSSL = _model.UseSSL
+            UseSSL = _model.UseSSL,
+            RedirectUrl = _model.RedirectUrl
         };
 
         MudDialog.Close(DialogResult.Ok(result));
