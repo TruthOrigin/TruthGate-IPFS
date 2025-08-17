@@ -18,62 +18,32 @@ namespace TruthGate_Web.Configuration
 
     public sealed class LiveCertProvider
     {
-        // inside LiveCertProvider class:
+        private static readonly SemaphoreSlim _throttle = new(2); // at most 2 issuances at a time
+
         private readonly ConcurrentDictionary<string, Task> _inflight = new(StringComparer.OrdinalIgnoreCase);
-
-        public void QueueIssueIfMissing(string host)
-        {
-            // de-dupe concurrent kicks per host
-            _inflight.GetOrAdd(host, h => Task.Run(async () =>
-            {
-                try
-                {
-                    var existing = await _store.LoadAsync(h, CancellationToken.None);
-                    var need = existing is null || IsCloseToExpiry(existing);
-                    if (!need) return;
-
-                    var issued = await _acme.IssueOrRenewAsync(h, CancellationToken.None);
-                    if (issued is not null)
-                        await _store.SaveAsync(h, issued, CancellationToken.None);
-                }
-                catch
-                {
-                    // swallow/log if you have ILogger; the watcher or next hit will retry
-                }
-                finally
-                {
-                    _inflight.TryRemove(h, out _);
-                }
-            }));
-        }
+        private readonly ConcurrentDictionary<string, (DateTimeOffset until, int failures)> _cooldown =
+            new(StringComparer.OrdinalIgnoreCase);
 
         private readonly SelfSignedCertCache _self;
         private readonly ICertificateStore _store;
         private readonly IAcmeIssuer _acme;
         private readonly IConfigService _config;
-        private readonly ConcurrentDictionary<string, Lazy<Task<X509Certificate2?>>> _cache = new();
+        private readonly ILogger<LiveCertProvider>? _log;
 
-        public LiveCertProvider(SelfSignedCertCache self, ICertificateStore store, IAcmeIssuer acme, IConfigService config)
+        public LiveCertProvider(SelfSignedCertCache self, ICertificateStore store, IAcmeIssuer acme, IConfigService config, ILogger<LiveCertProvider>? log = null)
         {
-            _self = self; _store = store; _acme = acme; _config = config;
+            _self = self; _store = store; _acme = acme; _config = config; _log = log;
         }
 
-        // --- Used by ServerCertificateSelector path
         public X509Certificate2 GetSelfSigned() => _self.Get();
 
         public SslDecision DecideForHost(string host)
         {
             var cfg = _config.Get();
             var match = cfg.Domains.FirstOrDefault(d => string.Equals(d.Domain?.Trim(), host, StringComparison.OrdinalIgnoreCase));
-
-            if (match is null)
-                return new SslDecision(SslDecisionKind.SelfSigned); // unknown host/IP
-
+            if (match is null) return new SslDecision(SslDecisionKind.SelfSigned);
             var useSsl = bool.TryParse(match.UseSSL, out var ok) && ok;
-            if (!useSsl)
-                return new SslDecision(SslDecisionKind.NoneFailTls);
-
-            return new SslDecision(SslDecisionKind.RealIfPresent);
+            return useSsl ? new SslDecision(SslDecisionKind.RealIfPresent) : new SslDecision(SslDecisionKind.NoneFailTls);
         }
 
         public X509Certificate2? TryLoadIssued(string host)
@@ -82,52 +52,86 @@ namespace TruthGate_Web.Configuration
             {
                 var cert = _store.LoadAsync(host, CancellationToken.None).GetAwaiter().GetResult();
                 if (cert is null) return null;
-                if (IsCloseToExpiry(cert)) return null; // force renew; handshake may fail until renewed
+                if (IsCloseToExpiry(cert)) return null;
                 return cert;
             }
-            catch
+            catch (Exception ex)
             {
+                _log?.LogWarning(ex, "[TLS] TryLoadIssued({Host}) failed", host);
                 return null;
             }
         }
 
-        // --- Async path (kept for completeness; not used by the selector block)
-        public async Task<X509Certificate2?> TryGetServerCertificateAsync(string? sni, CancellationToken ct)
+        public void QueueIssueIfMissing(string host)
         {
-            if (string.IsNullOrWhiteSpace(sni) || IPAddress.TryParse(sni, out _))
-                return _self.Get();
+            host = host.Trim().ToLowerInvariant();
 
-            var cfg = _config.Get();
-            var match = cfg.Domains.FirstOrDefault(d => string.Equals(d.Domain, sni, StringComparison.OrdinalIgnoreCase));
-            if (match is null) return _self.Get();
-
-            if (!bool.TryParse(match.UseSSL, out var useSsl) || !useSsl)
-                return null;
-
-            var key = sni.ToLowerInvariant();
-            var lazy = _cache.GetOrAdd(key, host => new Lazy<Task<X509Certificate2?>>(async () =>
+            // Respect cooldown
+            if (_cooldown.TryGetValue(host, out var cd) && DateTimeOffset.UtcNow < cd.until)
             {
-                var onDisk = await _store.LoadAsync(host, ct);
-                if (onDisk is { } existing && !IsCloseToExpiry(existing)) return existing;
-
-                var fresh = await _acme.IssueOrRenewAsync(host, ct);
-                if (fresh is { }) await _store.SaveAsync(host, fresh, ct);
-                return fresh;
-            }));
-
-            try { return await lazy.Value; }
-            finally
-            {
-                if (lazy.Value.IsFaulted || lazy.Value.IsCanceled)
-                    _cache.TryRemove(key, out _);
+                _log?.LogWarning("[TLS] {Host} in cooldown until {Until}, skipping queue", host, cd.until);
+                return;
             }
+
+            _inflight.GetOrAdd(host, _ => Task.Run(async () =>
+            {
+                try
+                {
+                    var existing = await _store.LoadAsync(host, CancellationToken.None);
+                    var need = existing is null || IsCloseToExpiry(existing);
+                    if (!need) { _log?.LogInformation("[TLS] {Host} already has fresh PFX", host); return; }
+
+                    await _throttle.WaitAsync(); // global concurrency guard
+                    try
+                    {
+                        _log?.LogInformation("[TLS] Issuing/renewing {Host}...");
+                        var issued = await _acme.IssueOrRenewAsync(host, CancellationToken.None);
+                        if (issued is not null)
+                        {
+                            await _store.SaveAsync(host, issued, CancellationToken.None);
+                            (DateTimeOffset until, int failures) removedCooldown;
+                            _cooldown.TryRemove(host, out removedCooldown);  // reset backoff
+                            _log?.LogInformation("[TLS] Saved new PFX for {Host}", host);
+                        }
+                        else
+                        {
+                            RegisterFailure(host);
+                        }
+                    }
+                    finally { _throttle.Release(); }
+                }
+                catch (Exception ex)
+                {
+                    _log?.LogError(ex, "[TLS] Issuance failed for {Host}", host);
+                    RegisterFailure(host);
+                }
+                finally
+                {
+                    Task removedTask;
+                    _inflight.TryRemove(host, out removedTask);
+                }
+            }));
+        }
+
+        private void RegisterFailure(string host)
+        {
+            var next = _cooldown.AddOrUpdate(host,
+                _ => (DateTimeOffset.UtcNow.AddMinutes(1), 1),
+                (_, prev) =>
+                {
+                    var failures = Math.Min(prev.failures + 1, 5);
+                    var minutes = failures switch { 1 => 1, 2 => 5, 3 => 15, 4 => 30, _ => 60 };
+                    return (DateTimeOffset.UtcNow.AddMinutes(minutes), failures);
+                });
+
+            _log?.LogWarning("[TLS] {Host} cooldown set until {Until} (failures={Fails})", host, next.until, next.failures);
         }
 
         private static bool IsCloseToExpiry(X509Certificate2 cert)
         {
-            if (!DateTimeOffset.TryParse(cert.GetExpirationDateString(), out var notAfter))
-                return false;
+            if (!DateTimeOffset.TryParse(cert.GetExpirationDateString(), out var notAfter)) return false;
             return (notAfter - DateTimeOffset.UtcNow) <= TimeSpan.FromDays(30);
         }
     }
+
 }

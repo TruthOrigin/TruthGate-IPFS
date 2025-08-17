@@ -13,6 +13,7 @@ namespace TruthGate_Web.Configuration
         private readonly string _accountPemPath;
         private readonly IAcmeChallengeStore _challengeStore;
         private readonly ILogger<CertesAcmeIssuer> _logger;
+        private readonly bool _isStaging;
 
         public CertesAcmeIssuer(
             IAcmeChallengeStore challengeStore,
@@ -23,6 +24,7 @@ namespace TruthGate_Web.Configuration
             _challengeStore = challengeStore;
             _accountPemPath = accountPemPath;
             _logger = logger;
+            _isStaging = useStaging;
             _dirUri = useStaging ? WellKnownServers.LetsEncryptStagingV2 : WellKnownServers.LetsEncryptV2;
         }
 
@@ -30,29 +32,22 @@ namespace TruthGate_Web.Configuration
         {
             try
             {
-                _logger.LogInformation("ACME: Starting issuance for {Host}", host);
+                _logger.LogInformation("ACME[{Dir}] start {Host}", _isStaging ? "staging" : "prod", host);
 
                 var accountKey = await LoadOrCreateAccountKeyAsync(ct);
                 var acme = new AcmeContext(_dirUri, accountKey);
 
-                try
-                {
-                    await acme.NewAccount(Array.Empty<string>(), termsOfServiceAgreed: true);
-                    _logger.LogInformation("ACME: Account created for {Host}", host);
-                }
-                catch
-                {
-                    _logger.LogDebug("ACME: Account already exists.");
-                }
+                try { await acme.NewAccount(Array.Empty<string>(), true); }
+                catch { _logger.LogDebug("ACME account exists"); }
 
                 var order = await acme.NewOrder(new[] { host });
-                _logger.LogInformation("ACME: Order created for {Host}", host);
+                _logger.LogInformation("ACME[{Dir}] order created for {Host}", _isStaging ? "staging" : "prod", host);
 
                 var authzs = await order.Authorizations();
                 foreach (var authz in authzs)
                 {
                     var http = await authz.Http();
-                    _logger.LogInformation("ACME: Placing challenge {Token} for {Host}", http.Token, host);
+                    _logger.LogInformation("ACME[{Dir}] place token {Token} for {Host}", _isStaging ? "staging" : "prod", http.Token, host);
 
                     _challengeStore.Put(http.Token, http.KeyAuthz, TimeSpan.FromMinutes(10));
                     await http.Validate();
@@ -62,39 +57,33 @@ namespace TruthGate_Web.Configuration
                     {
                         ct.ThrowIfCancellationRequested();
                         var res = await authz.Resource();
-
-                        if (res.Status == AuthorizationStatus.Valid)
+                        if (res.Status == Certes.Acme.Resource.AuthorizationStatus.Valid)
                         {
-                            _logger.LogInformation("ACME: Challenge validated for {Host}", host);
+                            _logger.LogInformation("ACME[{Dir}] authorization VALID for {Host}", _isStaging ? "staging" : "prod", host);
                             break;
                         }
-
-                        if (res.Status == AuthorizationStatus.Invalid)
-                        {
-                            _logger.LogError("ACME: Challenge failed for {Host}", host);
+                        if (res.Status == Certes.Acme.Resource.AuthorizationStatus.Invalid)
                             throw new InvalidOperationException($"ACME authorization failed for {host}");
-                        }
-
                         if (DateTimeOffset.UtcNow > deadline)
                             throw new TimeoutException($"ACME authorization timed out for {host}");
-
-                        await Task.Delay(1500, ct);
+                        await Task.Delay(1000, ct);
                     }
 
                     _challengeStore.Remove(http.Token);
                 }
 
-                var privateKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
-                var chain = await order.Generate(new CsrInfo { CommonName = host }, privateKey);
+                var key = KeyFactory.NewKey(KeyAlgorithm.ES256);
+                var chain = await order.Generate(new CsrInfo { CommonName = host }, key);
+                var pfxBytes = chain.ToPfx(key).Build(host, (string?)null);
 
-                var pfxBytes = chain.ToPfx(privateKey).Build(host, (string?)null);
-                _logger.LogInformation("ACME: Certificate successfully issued for {Host}", host);
+                _logger.LogInformation("ACME[{Dir}] issued PFX for {Host} (len={Len})",
+                    _isStaging ? "staging" : "prod", host, pfxBytes.Length);
 
-                return new X509Certificate2(pfxBytes);
+                return X509CertificateLoader.LoadPkcs12(pfxBytes, ReadOnlySpan<char>.Empty);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "ACME: Issuance failed for {Host}", host);
+                _logger.LogError(ex, "ACME[{Dir}] issuance FAILED for {Host}", _isStaging ? "staging" : "prod", host);
                 throw;
             }
         }
@@ -103,18 +92,18 @@ namespace TruthGate_Web.Configuration
         {
             var dir = Path.GetDirectoryName(_accountPemPath)!;
             System.IO.Directory.CreateDirectory(dir);
-
             if (File.Exists(_accountPemPath))
             {
-                _logger.LogInformation("ACME: Using existing account key at {Path}", _accountPemPath);
+                _logger.LogInformation("ACME account key: using existing {Path}", _accountPemPath);
                 var pem = await File.ReadAllTextAsync(_accountPemPath, ct);
                 return KeyFactory.FromPem(pem);
             }
 
-            _logger.LogInformation("ACME: Creating new account key at {Path}", _accountPemPath);
+            _logger.LogInformation("ACME account key: creating {Path}", _accountPemPath);
             var key = KeyFactory.NewKey(KeyAlgorithm.ES256);
             await File.WriteAllTextAsync(_accountPemPath, key.ToPem(), ct);
             return key;
         }
     }
+
 }
