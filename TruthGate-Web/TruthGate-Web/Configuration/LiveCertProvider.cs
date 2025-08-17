@@ -13,13 +13,16 @@ namespace TruthGate_Web.Configuration
         RealIfPresent
     }
 
+    public interface IAcmeIssuerLabel
+    {
+        string Label { get; }
+    }
 
     public readonly record struct SslDecision(SslDecisionKind Kind);
 
     public sealed class LiveCertProvider
     {
-        private static readonly SemaphoreSlim _throttle = new(2); // at most 2 issuances at a time
-
+        private static readonly SemaphoreSlim _throttle = new(2);
         private readonly ConcurrentDictionary<string, Task> _inflight = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, (DateTimeOffset until, int failures)> _cooldown =
             new(StringComparer.OrdinalIgnoreCase);
@@ -30,9 +33,18 @@ namespace TruthGate_Web.Configuration
         private readonly IConfigService _config;
         private readonly ILogger<LiveCertProvider>? _log;
 
-        public LiveCertProvider(SelfSignedCertCache self, ICertificateStore store, IAcmeIssuer acme, IConfigService config, ILogger<LiveCertProvider>? log = null)
+        // Optional: label so your logs show which ACME dir (prod/staging) you're on
+        private readonly string _acmeLabel;
+
+        public LiveCertProvider(
+            SelfSignedCertCache self,
+            ICertificateStore store,
+            IAcmeIssuer acme,
+            IConfigService config,
+            ILogger<LiveCertProvider>? log = null)
         {
             _self = self; _store = store; _acme = acme; _config = config; _log = log;
+            _acmeLabel = (acme as IAcmeIssuerLabel)?.Label ?? "unknown";
         }
 
         public X509Certificate2 GetSelfSigned() => _self.Get();
@@ -62,36 +74,47 @@ namespace TruthGate_Web.Configuration
             }
         }
 
-        public void QueueIssueIfMissing(string host)
+        // --- NEW: quick check used by the TLS selector to avoid noisy re-queues
+        public bool IsInFlight(string host) => _inflight.ContainsKey(host.Trim().ToLowerInvariant());
+
+        // --- NEW: returns false if skipped due to cooldown/inflight, true if actually queued
+        public bool TryQueueIssueIfMissing(string host)
         {
             host = host.Trim().ToLowerInvariant();
 
-            // Respect cooldown
+            // cool-down guard
             if (_cooldown.TryGetValue(host, out var cd) && DateTimeOffset.UtcNow < cd.until)
             {
-                _log?.LogWarning("[TLS] {Host} in cooldown until {Until}, skipping queue", host, cd.until);
-                return;
+                _log?.LogWarning("[TLS] {Host} in cooldown until {Until} (failures={Fails}), skip queue", host, cd.until, cd.failures);
+                return false;
             }
 
-            _inflight.GetOrAdd(host, _ => Task.Run(async () =>
+            // de-dupe: if already in-flight, don't re-enqueue
+            if (_inflight.ContainsKey(host))
+            {
+                _log?.LogInformation("[TLS] {Host} already issuing on {_acmeLabel}, skip re-queue", host, _acmeLabel);
+                return false;
+            }
+
+            _inflight[host] = Task.Run(async () =>
             {
                 try
                 {
                     var existing = await _store.LoadAsync(host, CancellationToken.None);
                     var need = existing is null || IsCloseToExpiry(existing);
-                    if (!need) { _log?.LogInformation("[TLS] {Host} already has fresh PFX", host); return; }
+                    if (!need) { _log?.LogInformation("[TLS] {Host} has fresh PFX; no issuance needed", host); return; }
 
-                    await _throttle.WaitAsync(); // global concurrency guard
+                    await _throttle.WaitAsync();
                     try
                     {
-                        _log?.LogInformation("[TLS] Issuing/renewing {Host}...");
+                        _log?.LogInformation("[TLS] [{Label}] issuing/renewing {Host}...", _acmeLabel, host);
                         var issued = await _acme.IssueOrRenewAsync(host, CancellationToken.None);
                         if (issued is not null)
                         {
                             await _store.SaveAsync(host, issued, CancellationToken.None);
-                            (DateTimeOffset until, int failures) removedCooldown;
-                            _cooldown.TryRemove(host, out removedCooldown);  // reset backoff
-                            _log?.LogInformation("[TLS] Saved new PFX for {Host}", host);
+                            (DateTimeOffset, int) removed;
+                            _cooldown.TryRemove(host, out removed); // reset backoff on success
+                            _log?.LogInformation("[TLS] [{Label}] saved new PFX for {Host}", _acmeLabel, host);
                         }
                         else
                         {
@@ -102,7 +125,7 @@ namespace TruthGate_Web.Configuration
                 }
                 catch (Exception ex)
                 {
-                    _log?.LogError(ex, "[TLS] Issuance failed for {Host}", host);
+                    _log?.LogError(ex, "[TLS] [{Label}] issuance failed for {Host}", _acmeLabel, host);
                     RegisterFailure(host);
                 }
                 finally
@@ -110,8 +133,13 @@ namespace TruthGate_Web.Configuration
                     Task removedTask;
                     _inflight.TryRemove(host, out removedTask);
                 }
-            }));
+            });
+
+            return true;
         }
+
+        // Keep original method signature if other code calls it
+        public void QueueIssueIfMissing(string host) => TryQueueIssueIfMissing(host);
 
         private void RegisterFailure(string host)
         {
@@ -132,6 +160,14 @@ namespace TruthGate_Web.Configuration
             if (!DateTimeOffset.TryParse(cert.GetExpirationDateString(), out var notAfter)) return false;
             return (notAfter - DateTimeOffset.UtcNow) <= TimeSpan.FromDays(30);
         }
-    }
 
+        // --- OPTIONAL: tiny introspection for debugging
+        public object GetCooldownSnapshot(string host)
+        {
+            host = (host ?? "").Trim().ToLowerInvariant();
+            if (_cooldown.TryGetValue(host, out var cd))
+                return new { host, coolingDown = DateTimeOffset.UtcNow < cd.until, until = cd.until, failures = cd.failures };
+            return new { host, coolingDown = false, failures = 0 };
+        }
+    }
 }

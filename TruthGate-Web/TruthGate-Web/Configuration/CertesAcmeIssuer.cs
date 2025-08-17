@@ -14,7 +14,7 @@ namespace TruthGate_Web.Configuration
         private readonly IAcmeChallengeStore _challengeStore;
         private readonly ILogger<CertesAcmeIssuer> _logger;
         private readonly bool _isStaging;
-
+        public string Label => _isStaging ? "staging" : "prod";
         public CertesAcmeIssuer(
             IAcmeChallengeStore challengeStore,
             ILogger<CertesAcmeIssuer> logger,
@@ -46,10 +46,17 @@ namespace TruthGate_Web.Configuration
                 var authzs = await order.Authorizations();
                 foreach (var authz in authzs)
                 {
+                    // inside the foreach (var authz in authzs)
                     var http = await authz.Http();
-                    _logger.LogInformation("ACME[{Dir}] place token {Token} for {Host}", _isStaging ? "staging" : "prod", http.Token, host);
+                    var token = http.Token;
+                    var keyAuthz = http.KeyAuthz;
 
-                    _challengeStore.Put(http.Token, http.KeyAuthz, TimeSpan.FromMinutes(10));
+                    _logger.LogInformation("ACME[{Dir}] token for {Host}: GET http://{Host}/.well-known/acme-challenge/{Token}",
+                        _isStaging ? "staging" : "prod", host, host, token);
+                    _logger.LogInformation("ACME[{Dir}] expected body (keyAuthz) for {Host}: {KeyAuthz}",
+                        _isStaging ? "staging" : "prod", host, keyAuthz);
+
+                    _challengeStore.Put(token, keyAuthz, TimeSpan.FromMinutes(10));
                     await http.Validate();
 
                     var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);

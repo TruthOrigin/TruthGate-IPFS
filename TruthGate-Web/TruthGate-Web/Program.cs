@@ -82,20 +82,24 @@ if (!builder.Environment.IsDevelopment())
     builder.Services.AddSingleton<IAcmeChallengeStore, MemoryChallengeStore>();
 
     var acmeStaging =
-        builder.Environment.IsDevelopment() || true;
+        builder.Environment.IsDevelopment() ||
+        string.Equals(Environment.GetEnvironmentVariable("TRUTHGATE_ACME_STAGING"), "true", StringComparison.OrdinalIgnoreCase);
 
 
-    // DI
+    var accountPem = Path.Combine(certDir, acmeStaging ? "account.staging.pem" : "account.prod.pem");
+
     builder.Services.AddSingleton<IAcmeIssuer>(sp =>
         new CertesAcmeIssuer(
             sp.GetRequiredService<IAcmeChallengeStore>(),
             sp.GetRequiredService<ILogger<CertesAcmeIssuer>>(),
             useStaging: acmeStaging,
-            accountPemPath: Path.Combine(certDir, "account.pem")));
-
+            accountPemPath: accountPem));
 
 
     builder.Services.AddSingleton<LiveCertProvider>();
+
+
+
     builder.Services.AddHostedService<ConfigWatchAndIssueService>();
 
     // === Kestrel ===
@@ -111,11 +115,9 @@ if (!builder.Environment.IsDevelopment())
                 ServerCertificateSelector = (ctx, sniRaw) =>
                 {
                     var live = lo.ApplicationServices.GetRequiredService<LiveCertProvider>();
-                    var fallback = live.GetSelfSigned(); // your existing self-signed
-
+                    var fallback = live.GetSelfSigned();
                     var sni = sniRaw?.Trim();
 
-                    // No SNI or IP literal → self-signed
                     if (string.IsNullOrWhiteSpace(sni) || IPAddress.TryParse(sni, out _))
                         return fallback;
 
@@ -123,18 +125,20 @@ if (!builder.Environment.IsDevelopment())
                     switch (decision.Kind)
                     {
                         case SslDecisionKind.SelfSigned:
-                            return fallback; // unknown host → self-signed
+                            return fallback;
 
                         case SslDecisionKind.NoneFailTls:
-                            return null; // intentional hard fail for UseSSL=false
+                            return null;
 
                         case SslDecisionKind.RealIfPresent:
                             {
                                 var issued = live.TryLoadIssued(sni);
                                 if (issued is not null) return issued;
 
-                                // kick issuance now, serve self-signed for this handshake
-                                live.QueueIssueIfMissing(sni);
+                                // only queue if not already in-flight
+                                if (!live.IsInFlight(sni))
+                                    live.QueueIssueIfMissing(sni);
+
                                 return fallback;
                             }
 
@@ -142,6 +146,7 @@ if (!builder.Environment.IsDevelopment())
                             return fallback;
                     }
                 }
+
             });
         });
 
