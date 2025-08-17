@@ -96,7 +96,14 @@ if (!builder.Environment.IsDevelopment())
             accountPemPath: accountPem));
 
 
-    builder.Services.AddSingleton<LiveCertProvider>();
+    builder.Services.AddSingleton<LiveCertProvider>(sp =>
+    new LiveCertProvider(
+        sp.GetRequiredService<SelfSignedCertCache>(),
+        sp.GetRequiredService<ICertificateStore>(),
+        sp.GetRequiredService<IAcmeIssuer>(),
+        sp.GetRequiredService<IConfigService>(),
+        sp.GetRequiredService<ILogger<LiveCertProvider>>()));
+
 
 
 

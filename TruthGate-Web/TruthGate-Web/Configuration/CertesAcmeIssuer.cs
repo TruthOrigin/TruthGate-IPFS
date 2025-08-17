@@ -7,7 +7,7 @@ using Certes.Acme.Resource;
 
 namespace TruthGate_Web.Configuration
 {
-    public sealed class CertesAcmeIssuer : IAcmeIssuer
+    public sealed class CertesAcmeIssuer : IAcmeIssuer, IAcmeIssuerLabel
     {
         private readonly Uri _dirUri;
         private readonly string _accountPemPath;
