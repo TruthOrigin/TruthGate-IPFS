@@ -24,6 +24,17 @@
         </MudButton>
     </div>
 
+    <MudPaper Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6">Pinned Content Summary</MudText>
+        <MudText>
+            <b>@_items.Count()</b> pinned items are actively tracked and managed by TruthGate.
+        </MudText>
+        <MudText>
+            <b>@_unmappedItems.Count()</b> pinned items were detected on this node but are not tracked by TruthGate.
+        </MudText>
+    </MudPaper>
+
+
     <MudTable Items="_items" Dense="true" Hover="true" Bordered="true" Loading="_loading">
         <ToolBarContent>
             <MudTextField @bind-Value="_search"
@@ -133,10 +144,23 @@
     private string? _search;
     private List<PinnedRow> _all = new();
     private IEnumerable<PinnedRow> _items => string.IsNullOrWhiteSpace(_search)
-        ? _all
-        : _all.Where(x =>
+    ? _all.Where(x => !string.IsNullOrWhiteSpace(x.MfsPath))
+    : _all.Where(x =>
+        !string.IsNullOrWhiteSpace(x.MfsPath) &&
+        (
             (!string.IsNullOrWhiteSpace(x.Name) && x.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)) ||
-             x.Cid.Contains(_search, StringComparison.OrdinalIgnoreCase));
+             x.Cid.Contains(_search, StringComparison.OrdinalIgnoreCase)
+        ));
+
+    private IEnumerable<PinnedRow> _unmappedItems => string.IsNullOrWhiteSpace(_search)
+    ? _all.Where(x => string.IsNullOrWhiteSpace(x.MfsPath))
+    : _all.Where(x =>
+    string.IsNullOrWhiteSpace(x.MfsPath) &&
+    (
+        (!string.IsNullOrWhiteSpace(x.Name) && x.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)) ||
+         x.Cid.Contains(_search, StringComparison.OrdinalIgnoreCase)
+    ));
+
 
     private const string ProductionRoot = "/production";
     private const string ManagedRoot = "/production/pinned";
