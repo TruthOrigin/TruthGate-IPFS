@@ -87,13 +87,6 @@ If you’ve ever wrestled with IPFS routing, SSL certs, or gateway hacks just to
 
 ---
 
-## 📖 License
-
-TruthGate is licensed under the MIT License.
-Use it. Fork it. Break it. Improve it. Let it spread.
-
----
-
 ## 🧙‍♂️ Contribute
 
 Pull requests welcome.
