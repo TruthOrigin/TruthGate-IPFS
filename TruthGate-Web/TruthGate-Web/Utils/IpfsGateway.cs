@@ -630,7 +630,7 @@ namespace TruthGate_Web.Utils
                 if (!forwardRequest.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
                     forwardRequest.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
             }
-
+            client.Timeout = TimeSpan.FromHours(2);
             using var responseMessage = await client.SendAsync(
                 forwardRequest,
                 HttpCompletionOption.ResponseHeadersRead,

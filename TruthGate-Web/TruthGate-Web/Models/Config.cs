@@ -7,6 +7,7 @@
 
         public List<EdgeDomain> Domains { get; set; } = new List<EdgeDomain>();
         public List<ApiKey> ApiKeys { get; set; } = new List<ApiKey>();
+        public List<IpnsKey> IpnsKeys { get; set; } = new List<IpnsKey>();
 
         public List<UserAccount> Users
         {
@@ -58,5 +59,14 @@
     {
         public string UserName { get; set; }
         public string PasswordHashed { get; set; }
+    }
+
+    public class IpnsKey
+    {
+        public string Key { get; set; }
+        public string Name { get; set; }
+        public string CurrentCID { get; set; }
+        public bool AutoUpdateToPin { get; set; }
+        public bool KeepOldCidPinned { get; set; }
     }
 }

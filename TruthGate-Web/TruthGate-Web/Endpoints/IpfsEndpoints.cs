@@ -86,18 +86,10 @@ namespace TruthGate_Web.Endpoints
     string? path,
     IHttpClientFactory clientFactory) =>
             {
-                if (path != null && path.EndsWith("manifest.json", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine($"[TruthGate][IPFS] Manifest request detected: /ipfs/{path}");
-                    Console.WriteLine($"  Full URL: {context.Request.Path + context.Request.QueryString}");
-                    Console.WriteLine($"  From IP: {context.Connection.RemoteIpAddress}");
-                }
-
+               
                 // Only handle our special query marker
                 if (!context.Request.Query.ContainsKey("tgcid"))
                     return; // let the rest of the pipeline handle it
-
-               
 
                 var cid = context.Request.Query["tgcid"].ToString();
                 if (string.IsNullOrWhiteSpace(cid))
@@ -139,11 +131,6 @@ namespace TruthGate_Web.Endpoints
                 var mfsPath = DomainHelpers.GetMappedDomain(context);
                 if (!string.IsNullOrWhiteSpace(mfsPath))
                     return;
-
-                if (context.Request.Query.ContainsKey("tgcid"))
-                {
-                    Console.WriteLine($"[TG] tgcid hit: {rest}");
-                }
 
                 if (TruthGate_Web.Utils.DomainHelpers.IsMappedDomain(context))
                 {
