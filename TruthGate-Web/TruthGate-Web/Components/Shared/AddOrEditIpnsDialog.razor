@@ -1,0 +1,357 @@
+﻿@using MudBlazor
+@using System.Text.Json
+@using TruthGate_Web.Utils
+@using TruthGate_Web.Endpoints
+@inject IApiKeyProvider Keys
+
+<MudDialog>
+    <DialogContent>
+    <MudForm @ref="_form" Model="_model" Validation="Validate">
+
+        <MudTextField Label="Name (folder base under /production/pinned)"
+                      @bind-Value="_model.Name"
+                      Immediate="true"
+                      Required="true"
+                      Disabled="_isEdit" />
+        <MudText Typo="Typo.caption" Class="mb-2">
+            Versions will be created as <b>@_model.Name</b>-v001, v002, …
+        </MudText>
+        <br />
+
+        <MudTextField Label="IPNS Key (k51… or /ipns/k51…)"
+                      @bind-Value="_model.Key"
+                      Immediate="true"
+                      Required="true"
+                      Disabled="_isEdit" />
+
+            <!-- Auto Update to New CID -->
+            <MudPaper Class="pa-3 mt-3">
+                <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                    <!-- Left: control + state chip -->
+                    <MudItem xs="12" sm="4" md="4" lg="4" xl="4">
+                        <div class="flex items-center justify-between gap-2">
+                            <MudText Typo="Typo.subtitle2">Auto update to new CID</MudText>
+                            @if (_model.AutoUpdateToPin)
+                            {
+                                <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled">Enabled</MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined">Disabled</MudChip>
+                            }
+                        </div>
+                        <div class="mt-2">
+                            <MudSwitch T="bool"
+                                       @bind-Value="_model.AutoUpdateToPin"
+                                       Color="Color.Primary" />
+                        </div>
+                    </MudItem>
+
+                    <!-- Right: description -->
+                    <MudItem xs="12" sm="8" md="8" lg="8" xl="8">
+                        <MudText Typo="Typo.body2">
+                            When enabled, TruthGate’s background service checks this IPNS every ~30 minutes and on “Update Now”.
+                            If the IPNS resolves to a new CID, we stage, pin, and promote a new version folder:
+                            <code>/production/pinned/@_model.Name-vNNN</code>. The latest CID becomes your <b>CurrentCID</b>.
+                        </MudText>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <!-- Keep Old Versions Pinned -->
+            <MudPaper Class="pa-3 mt-3">
+                <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                    <!-- Left: control + state chip -->
+                    <MudItem xs="12" sm="4" md="4" lg="4" xl="4">
+                        <div class="flex items-center justify-between gap-2">
+                            <MudText Typo="Typo.subtitle2">Keep old versions pinned</MudText>
+                            @if (_model.KeepOldCidPinned)
+                            {
+                                <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled">Keep</MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined">Prune</MudChip>
+                            }
+                        </div>
+                        <div class="mt-2">
+                            <MudSwitch T="bool"
+                                       @bind-Value="_model.KeepOldCidPinned"
+                                       Color="Color.Primary" />
+                        </div>
+                    </MudItem>
+
+                    <!-- Right: description -->
+                    <MudItem xs="12" sm="8" md="8" lg="8" xl="8">
+                        <MudText Typo="Typo.body2">
+                            <b>If enabled:</b> older versions remain under <code>/production/pinned/@_model.Name-vNNN</code> and stay pinned.<br />
+                            <b>If disabled:</b> older versions are removed retroactively (not just future ones):
+                            we delete older <code>-vNNN</code> folders from MFS and <i>unpin</i> their CIDs. Those blocks become eligible
+                            for IPFS garbage collection once nothing else references them.
+                        </MudText>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+
+        <!-- Behavior details -->
+            <MudExpansionPanels Class="mt-3">
+                <MudExpansionPanel Text="What this means (details)">
+                    <ul class="pl-5 list-disc">
+                        <li>
+                            <MudText Typo="Typo.body2">
+                                <b>Crash-safe updates:</b> new content is staged, pinned, and only then promoted to
+                                <code>/production/pinned/@_model.Name-vNNN</code>. Staging is auto-cleaned on startup and after runs.
+                            </MudText>
+                        </li>
+                        <li>
+                            <MudText Typo="Typo.body2">
+                                <b>Retroactive pruning:</b> if you turn off “Keep old versions”, we prune all but the latest on the next cycle (and when you save).
+                            </MudText>
+                        </li>
+                        <li>
+                            <MudText Typo="Typo.body2">
+                                <b>GC behavior:</b> after we remove MFS folders and unpin their CIDs, IPFS will eventually reclaim the
+                                space via garbage collection, provided nothing else references those blocks.
+                            </MudText>
+                        </li>
+                        <li>
+                            <MudText Typo="Typo.body2">
+                                <b>Manual Update:</b> “Update Now” triggers the same logic immediately for this entry.
+                            </MudText>
+                        </li>
+                    </ul>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+
+
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudText Color="Color.Error" Class="mt-2">@_error</MudText>
+        }
+
+        @if (_busy)
+        {
+            <div class="mt-2 flex items-center gap-2">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+                <MudText Typo="Typo.caption">Validating IPNS… This can take a moment.</MudText>
+            </div>
+        }
+    </MudForm>
+</DialogContent>
+
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Default" Disabled="_busy">Cancel</MudButton>
+        <MudButton OnClick="Submit" Color="Color.Primary" Variant="Variant.Filled" Disabled="_busy">
+            @(_isEdit ? "Save" : "Add")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public bool IsEdit { get; set; } = false;
+    [Parameter] public string? InitialName { get; set; }
+    [Parameter] public string? InitialKey { get; set; }
+    [Parameter] public bool InitialAutoUpdateToPin { get; set; } = true;
+    [Parameter] public bool InitialKeepOldCidPinned { get; set; } = true;
+
+    [Parameter] public string ManagedRoot { get; set; } = "/production/pinned";
+
+    [Inject] IConfigService ConfigSvc { get; set; } = default!;
+    [Inject] IHttpClientFactory HttpFactory { get; set; } = default!;
+
+    public sealed class IpnsResult
+    {
+        public required string Name { get; init; }               // Immutable on edit
+        public required string Key { get; init; }                // Canonicalized
+        public bool AutoUpdateToPin { get; init; }
+        public bool KeepOldCidPinned { get; init; }
+        public bool IsEdit { get; init; }
+    }
+
+    private sealed class Model
+    {
+        public string Name { get; set; } = "";
+        public string Key { get; set; } = "";
+        public bool AutoUpdateToPin { get; set; } = true;
+        public bool KeepOldCidPinned { get; set; } = true;
+    }
+
+    private readonly Model _model = new();
+    private MudForm _form = default!;
+    private string? _error;
+    private bool _busy;
+    private bool _isEdit => IsEdit;
+
+    protected override void OnInitialized()
+    {
+        _model.Name = InitialName ?? "";
+        _model.Key = InitialKey ?? "";
+        _model.AutoUpdateToPin = InitialAutoUpdateToPin;
+        _model.KeepOldCidPinned = InitialKeepOldCidPinned;
+    }
+
+    private IEnumerable<string> Validate()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(_model.Name))
+            yield return "Name is required.";
+        if (string.IsNullOrWhiteSpace(_model.Key))
+            yield return "IPNS key is required.";
+
+        var leaf = IpfsGateway.ToSafeLeaf(_model.Name);
+        if (leaf is null)
+            yield return "Invalid name.";
+        if (!_model.Key.StartsWith("k51") && !_model.Key.StartsWith("/ipns/"))
+            yield return "IPNS Key should look like k51… or /ipns/k51…";
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task<bool> IsNameAvailableAsync(string name)
+    {
+        var cfg = ConfigSvc.Get();
+
+        // A) config collisions (except self if edit)
+        if ((cfg.IpnsKeys ?? new()).Any(k =>
+              !(_isEdit && string.Equals(k.Name, _model.Name, StringComparison.OrdinalIgnoreCase)) &&
+              string.Equals(k.Name, name, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        // B) MFS /production/pinned collisions (name or name-v*)
+        var children = await ListMfsChildrenAsync(ManagedRoot);
+        if (children.ContainsKey(name)) return false;
+        var prefix = $"{name}-v";
+        if (children.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        return true;
+    }
+
+    private async Task<Dictionary<string, (string Cid, string Path)>> ListMfsChildrenAsync(string parentPath)
+    {
+        parentPath = IpfsGateway.NormalizeMfs(parentPath);
+        var rest = $"/api/v0/files/ls?arg={Uri.EscapeDataString(parentPath)}&long=true";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        var dict = new Dictionary<string, (string Cid, string Path)>(StringComparer.OrdinalIgnoreCase);
+        if (!res.IsSuccessStatusCode) return dict;
+
+        var el = await ReadLastJsonAsync(res);
+        if (el is null) return dict;
+        if (el.Value.TryGetProperty("Entries", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var e in arr.EnumerateArray())
+            {
+                var name = e.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
+                var cid = e.TryGetProperty("Hash", out var h) ? h.GetString() ?? "" : "";
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(cid)) continue;
+                dict[name] = (cid, IpfsGateway.NormalizeMfs($"{parentPath}/{name}"));
+            }
+        }
+        return dict;
+    }
+
+    private static string CanonicalizeIpnsKey(string key)
+    {
+        var s = (key ?? "").Trim();
+        if (s.StartsWith("/ipns/", StringComparison.OrdinalIgnoreCase))
+            s = s.Substring(6);
+        return s;
+    }
+
+    private async Task<string> ResolveIpnsLatestCidAsync(string ipnsKey)
+    {
+        var rest = $"/api/v0/name/resolve?arg={Uri.EscapeDataString($"/ipns/{ipnsKey}")}&recursive=false&nocache=false";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"name/resolve failed ({(int)res.StatusCode})");
+
+        var el = await ReadLastJsonAsync(res);
+        var path = el?.GetProperty("Path").GetString();
+        if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/ipfs/", StringComparison.Ordinal))
+            throw new InvalidOperationException("IPNS resolution did not return an /ipfs/<cid> path.");
+        return path.Substring("/ipfs/".Length);
+    }
+
+    private static async Task<JsonElement?> ReadLastJsonAsync(HttpResponseMessage res)
+    {
+        var text = await res.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        try { using var doc = JsonDocument.Parse(text); return doc.RootElement.Clone(); }
+        catch { }
+
+        foreach (var line in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Reverse())
+        {
+            var t = line.Trim();
+            if (!t.StartsWith("{") || !t.EndsWith("}")) continue;
+            try { using var doc = JsonDocument.Parse(t); return doc.RootElement.Clone(); } catch { }
+        }
+        return null;
+    }
+
+    private async void Submit()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        // Name leaf (immutable on edit)
+        var leaf = IpfsGateway.ToSafeLeaf(_model.Name);
+        if (leaf is null) { _error = "Invalid name."; return; }
+
+        try
+        {
+            _busy = true;
+            _error = null;
+            StateHasChanged();
+
+            // Name uniqueness (add only)
+            if (!_isEdit)
+            {
+                if (!await IsNameAvailableAsync(leaf))
+                {
+                    _error = $"The name '{leaf}' is already used by an IPNS entry or pinned folder.";
+                    _busy = false; StateHasChanged();
+                    return;
+                }
+            }
+
+            // Canonicalize key and reject duplicates across config (except self on edit)
+            var canonicalKey = CanonicalizeIpnsKey(_model.Key);
+            var cfg = ConfigSvc.Get();
+            var dupe = (cfg.IpnsKeys ?? new()).FirstOrDefault(k =>
+                !(_isEdit && string.Equals(k.Name, _model.Name, StringComparison.OrdinalIgnoreCase)) &&
+                string.Equals(CanonicalizeIpnsKey(k.Key), canonicalKey, StringComparison.OrdinalIgnoreCase));
+            if (dupe is not null)
+            {
+                _error = $"This IPNS key already exists under '{dupe.Name}'.";
+                _busy = false; StateHasChanged();
+                return;
+            }
+
+            // Resolve IPNS to verify it’s real (and give user feedback if slow)
+            _ = await ResolveIpnsLatestCidAsync(canonicalKey);
+
+            MudDialog.Close(DialogResult.Ok(new IpnsResult
+                {
+                    IsEdit = _isEdit,
+                    Name = leaf,
+                    Key = canonicalKey,
+                    AutoUpdateToPin = _model.AutoUpdateToPin,
+                    KeepOldCidPinned = _model.KeepOldCidPinned
+                }));
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            StateHasChanged();
+        }
+    }
+}

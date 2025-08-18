@@ -1,0 +1,580 @@
+﻿@page "/pinned-ipns"
+@using System.Text.Json
+@using System.Text.RegularExpressions
+@using MudBlazor
+@using TruthGate_Web.Components.Pages.Settings.Shared
+@using TruthGate_Web.Models
+@using TruthGate_Web.Utils
+@using TruthGate_Web.Endpoints
+@inject IHttpClientFactory HttpFactory
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+@inject IConfigService ConfigSvc
+@inject IIpnsUpdateService IpnsUpdater
+@inject Microsoft.Extensions.Caching.Memory.IMemoryCache Cache
+@inject IJSRuntime JS
+@rendermode InteractiveServer
+@inject IApiKeyProvider Keys
+
+<MudContainer Class="py-3" MaxWidth="MaxWidth.Large">
+    <div class="flex items-center justify-between mb-4">
+        <MudText Typo="Typo.h3">Pinned IPNS</MudText>
+        <br />
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Add"
+                   OnClick="OnAddIpns">
+            Add IPNS
+        </MudButton>
+    </div>
+
+    <MudPaper Class="pa-4 mb-4">
+        <MudText Typo="Typo.h6">Summary</MudText>
+       @*  <MudText>
+            <b>@_totalRecursivePins</b> recursive pins on this node.
+        </MudText> *@
+        <MudText>
+            <b>@_rows.Count</b> IPNS entries tracked by TruthGate.
+        </MudText>
+        <MudText>
+            <b>@_needsUpdate</b> entries have a newer CID available.
+        </MudText>
+    </MudPaper>
+
+    <MudTable Items="_rows" Dense="true" Hover="true" Bordered="true" Loading="_loading">
+        <ToolBarContent>
+            <MudTextField @bind-Value="_search"
+                          Placeholder="Search by name, IPNS, CID…"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          Class="w-full md:w-96" />
+            <MudSpacer />
+            <MudButton Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.PlayArrow"
+                       OnClick="@(() => RunAllNow())">
+                Update All Now
+            </MudButton>
+            <MudButton Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.Refresh"
+                       OnClick="Reload">
+                Refresh
+            </MudButton>
+        </ToolBarContent>
+
+        <HeaderContent>
+            <MudTh>Name</MudTh>
+            <MudTh>IPNS Key</MudTh>
+            <MudTh>Current CID</MudTh>
+            @* <MudTh>Latest CID</MudTh>
+            <MudTh>Status</MudTh> *@
+            <MudTh>Auto Update</MudTh>
+            <MudTh>Keep Old</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+
+        <RowTemplate>
+            <MudTd>
+                <MudText>@context.Name</MudText>
+                <MudText Typo="Typo.caption" Class="text-secondary">/production/pinned/@context.Name- vN (versioned)</MudText>
+            </MudTd>
+
+            <MudTd>
+                <MudStack Row="true" AlignItems="AlignItems.Center">
+                    <MudText Class="break-all truncate-text">@context.Key</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                   Size="Size.Small"
+                                   OnClick="@(() => Copy(context.Key))" />
+                </MudStack>
+            </MudTd>
+
+            <MudTd>
+                @if (!string.IsNullOrWhiteSpace(context.CurrentCid))
+                {
+                    <MudStack>
+                        <!-- Current CID -->
+                        <MudStack Row="true" AlignItems="AlignItems.Center">
+                            <MudText Class="break-all truncate-text">@context.CurrentCid</MudText>
+                            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                           Size="Size.Small"
+                                           OnClick="@(() => Copy(context.CurrentCid!))" />
+                        </MudStack>
+
+                        <!-- Status & Latest CID -->
+                        @if (context.ResolveError is not null)
+                        {
+                            <MudTooltip Text="@context.ResolveError">
+                                <MudChip T="string" Color="Color.Error" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.ErrorOutline">
+                                    Resolve Failed
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                        else if (context.LatestCid == context.CurrentCid)
+                        {
+                            <MudChip T="string" Color="Color.Success" Variant="Variant.Filled" Icon="@Icons.Material.Filled.CheckCircle">
+                                Up to date
+                            </MudChip>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(context.LatestCid))
+                        {
+                            <MudStack Row="true" AlignItems="AlignItems.Center">
+                               @*  <MudText Class="break-all truncate-text">@context.LatestCid</MudText> *@
+                                
+                                <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.NewReleases">
+                                    Update available
+                                </MudChip>
+
+                                <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                               Size="Size.Small"
+                                               OnClick="@(() => Copy(context.LatestCid!))" />
+                            </MudStack>
+                        }
+                        else
+                        {
+                            <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+                        }
+                    </MudStack>
+                }
+                else
+                {
+                    <MudText Color="Color.Primary">—</MudText>
+                }
+            </MudTd>
+
+@* 
+            <MudTd>
+                @if (!string.IsNullOrWhiteSpace(context.LatestCid))
+                {
+                    <MudStack Row="true" AlignItems="AlignItems.Center">
+                        <MudText Class="break-all truncate-text">@context.LatestCid</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                       Size="Size.Small"
+                                       OnClick="@(() => Copy(context.LatestCid!))" />
+                    </MudStack>
+                }
+                else if (context.ResolveError is not null)
+                {
+                    <MudTooltip Text="@context.ResolveError">
+                        <MudChip T="string" Color="Color.Error" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.ErrorOutline">
+                            Resolve Failed
+                        </MudChip>
+                    </MudTooltip>
+                }
+                else
+                {
+                    <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+                }
+            </MudTd>
+
+            <MudTd>
+                @if (context.ResolveError is not null)
+                {
+                    <MudText Color="Color.Error">Error</MudText>
+                }
+                else if (context.LatestCid == context.CurrentCid && !string.IsNullOrWhiteSpace(context.CurrentCid))
+                {
+                    <MudChip T="string" Color="Color.Success" Variant="Variant.Filled" Icon="@Icons.Material.Filled.CheckCircle">
+                        Up to date
+                    </MudChip>
+                }
+                else if (!string.IsNullOrWhiteSpace(context.LatestCid))
+                {
+                    <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.NewReleases">
+                        Update available
+                    </MudChip>
+                }
+                else
+                {
+                    <MudText>—</MudText>
+                }
+            </MudTd> *@
+
+            <MudTd>
+                @if (context.AutoUpdate)
+                {
+                    <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled">Enabled</MudChip>
+                }
+                else
+                {
+                    <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined">Disabled</MudChip>
+                }
+            </MudTd>
+
+            <MudTd>
+                @if (context.KeepOld)
+                {
+                    <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled">Keep</MudChip>
+                }
+                else
+                {
+                    <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined">Prune</MudChip>
+                }
+            </MudTd>
+
+
+            <MudTd>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Text"
+                           StartIcon="@Icons.Material.Filled.Edit"
+                           OnClick="@(() => OnEditIpns(context))">
+                    Edit
+                </MudButton>
+
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Text"
+                           StartIcon="@Icons.Material.Filled.PlayArrow"
+                           Disabled="@(context.ResolveError is not null)"
+                           OnClick="@(() => RunOneNow(context.Name))">
+                    Update Now
+                </MudButton>
+
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Text"
+                           Color="Color.Error"
+                           StartIcon="@Icons.Material.Filled.DeleteForever"
+                           Class="ml-2"
+                           OnClick="@(() => DeleteIpns(context))">
+                    Remove
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+
+        <NoRecordsContent>
+            <MudText>No IPNS entries tracked yet.</MudText>
+        </NoRecordsContent>
+
+        <PagerContent>
+            <MudTablePager />
+        </PagerContent>
+    </MudTable>
+</MudContainer>
+
+@code {
+    private const string ManagedRoot = "/production/pinned";
+    private bool _loading = true;
+    private int _totalRecursivePins = 0;
+    private int _needsUpdate = 0;
+    private string? _search;
+
+    private readonly List<Row> _rows = new();
+    private IEnumerable<Row> Filtered => string.IsNullOrWhiteSpace(_search)
+        ? _rows
+        : _rows.Where(x =>
+              (x.Name?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false) ||
+              (x.Key?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false) ||
+              (x.CurrentCid?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false) ||
+              (x.LatestCid?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false));
+
+    protected override async Task OnInitializedAsync() => await Reload();
+
+    private async Task Reload()
+    {
+        try
+        {
+            _loading = true;
+            _rows.Clear();
+
+            // 1) Count recursive pins for summary (like your other page)
+            _totalRecursivePins = await CountRecursivePinsAsync();
+
+            // 2) Load config IPNS entries
+            var cfg = ConfigSvc.Get();
+            var ipns = (cfg.IpnsKeys ?? new List<IpnsKey>()).ToList();
+
+            // 3) Resolve each IPNS to latest CID (parallel but bounded)
+            var tasks = ipns.Select(async k =>
+            {
+                var row = new Row
+                    {
+                        Name = k.Name?.Trim() ?? "",
+                        Key = CanonicalizeIpnsKey(k.Key),
+                        AutoUpdate = k.AutoUpdateToPin,
+                        KeepOld = k.KeepOldCidPinned,
+                        CurrentCid = k.CurrentCID?.Trim()
+                    };
+
+                try
+                {
+                    row.LatestCid = await ResolveIpnsLatestCidAsync(row.Key);
+                }
+                catch (Exception ex)
+                {
+                    row.ResolveError = ex.Message;
+                }
+
+                return row;
+            });
+
+            foreach (var t in tasks)
+            {
+                var r = await t;
+                _rows.Add(r);
+            }
+
+            _needsUpdate = _rows.Count(r => r.ResolveError is null
+                                            && !string.IsNullOrWhiteSpace(r.LatestCid)
+                                            && !string.Equals(r.LatestCid, r.CurrentCid, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load IPNS list: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnAddIpns()
+    {
+        var parameters = new DialogParameters<AddOrEditIpnsDialog>
+    {
+        { x => x.ManagedRoot, ManagedRoot },
+        { x => x.IsEdit, false }
+    };
+        var dlg = Dialogs.Show<AddOrEditIpnsDialog>("Add IPNS", parameters,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Medium, CloseButton = true });
+        var res = await dlg.Result;
+        if (res.Canceled || res.Data is not AddOrEditIpnsDialog.IpnsResult r) return;
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            cfg.IpnsKeys ??= new List<IpnsKey>();
+            cfg.IpnsKeys.Add(new IpnsKey
+                {
+                    Name = r.Name,
+                    Key = r.Key,
+                    AutoUpdateToPin = r.AutoUpdateToPin,
+                    KeepOldCidPinned = r.KeepOldCidPinned,
+                    CurrentCID = null
+                });
+        });
+
+        Snackbar.Add($"Added IPNS '{r.Name}'. You can Update Now to pin the current CID.", Severity.Success);
+        await Reload();
+    }
+
+    private async Task OnEditIpns(Row row)
+    {
+        var parameters = new DialogParameters<AddOrEditIpnsDialog>
+    {
+        { x => x.ManagedRoot, ManagedRoot },
+        { x => x.IsEdit, true },
+        { x => x.InitialName, row.Name },
+        { x => x.InitialKey, row.Key },
+        { x => x.InitialAutoUpdateToPin, row.AutoUpdate },
+        { x => x.InitialKeepOldCidPinned, row.KeepOld }
+    };
+
+        var dlg = Dialogs.Show<AddOrEditIpnsDialog>($"Edit IPNS - {row.Name}", parameters,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Medium, CloseButton = true });
+        var res = await dlg.Result;
+        if (res.Canceled || res.Data is not AddOrEditIpnsDialog.IpnsResult r) return;
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var item = cfg.IpnsKeys?.FirstOrDefault(k => string.Equals(k.Name, r.Name, StringComparison.OrdinalIgnoreCase));
+            if (item is null) return;
+            item.Key = r.Key; // allow key to change
+            item.AutoUpdateToPin = r.AutoUpdateToPin;
+            item.KeepOldCidPinned = r.KeepOldCidPinned;
+            // CurrentCID remains; worker will reconcile on next pass or via Update Now
+        });
+
+        // Retroactive prune if KeepOld flipped false
+        if (!r.KeepOldCidPinned)
+            await IpnsUpdater.EnsureKeepOldPolicyAsync(r.Name);
+
+        Snackbar.Add($"Updated IPNS '{r.Name}'.", Severity.Success);
+        await Reload();
+    }
+
+
+
+    private async Task DeleteIpns(Row row)
+    {
+        var confirmParams = new DialogParameters<ConfirmDeleteDialog>
+        {
+            { x => x.Message, $"Remove IPNS '{row.Name}' from tracking? (Pinned versions stay.)" }
+        };
+        var dlg = Dialogs.Show<ConfirmDeleteDialog>("Confirm Remove", confirmParams);
+        var res = await dlg.Result;
+        if (res.Canceled || res.Data is not bool ok || !ok) return;
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var list = cfg.IpnsKeys ?? new List<IpnsKey>();
+            var idx = list.FindIndex(k => string.Equals(k.Name, row.Name, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0) list.RemoveAt(idx);
+        });
+
+        Snackbar.Add($"Removed IPNS '{row.Name}'.", Severity.Success);
+        await Reload();
+    }
+
+    private async Task RunOneNow(string name)
+    {
+        try
+        {
+            await IpnsUpdater.RunOnceForAsync(name);
+            Snackbar.Add($"Update for '{name}' completed.", Severity.Success);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Update failed for '{name}': {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task RunAllNow()
+    {
+        try
+        {
+            await IpnsUpdater.RunOnceAllAsync();
+            Snackbar.Add("All IPNS updates completed.", Severity.Success);
+            await Reload();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Update failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OnToggleAutoUpdate(Row row)
+    {
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var k = cfg.IpnsKeys?.FirstOrDefault(x => string.Equals(x.Name, row.Name, StringComparison.OrdinalIgnoreCase));
+            if (k is not null) k.AutoUpdateToPin = row.AutoUpdate;
+        });
+        Snackbar.Add($"{row.Name}: Auto Update {(row.AutoUpdate ? "enabled" : "disabled")}.", Severity.Info);
+    }
+
+    private async Task OnToggleKeepOld(Row row)
+    {
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            var k = cfg.IpnsKeys?.FirstOrDefault(x => string.Equals(x.Name, row.Name, StringComparison.OrdinalIgnoreCase));
+            if (k is not null) k.KeepOldCidPinned = row.KeepOld;
+        });
+
+        // Retroactive cleanup happens inside the worker on the next pass; also kick now.
+        await IpnsUpdater.EnsureKeepOldPolicyAsync(row.Name);
+        Snackbar.Add($"{row.Name}: Keep Old {(row.KeepOld ? "enabled" : "disabled")} (retroactive applied).", Severity.Info);
+        await Reload();
+    }
+
+    private async Task<int> CountRecursivePinsAsync()
+    {
+        var rest = "/api/v0/pin/ls?type=recursive";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode) return 0;
+
+        var el = await ReadLastJsonAsync(res);
+        if (el is null) return 0;
+
+        if (el.Value.TryGetProperty("Keys", out var keys) && keys.ValueKind == JsonValueKind.Object)
+            return keys.EnumerateObject().Count();
+
+        return 0;
+    }
+
+    private static string CanonicalizeIpnsKey(string key)
+    {
+        var s = (key ?? "").Trim();
+        if (s.StartsWith("/ipns/", StringComparison.OrdinalIgnoreCase))
+            s = s.Substring(6);
+        return s;
+    }
+
+    private async Task<string> ResolveIpnsLatestCidAsync(string ipnsKey)
+    {
+        // ipfs name resolve /ipns/<key>  => /ipfs/<cid>
+        var rest = $"/api/v0/name/resolve?arg={Uri.EscapeDataString($"/ipns/{ipnsKey}")}&recursive=false&nocache=false";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"name/resolve failed ({(int)res.StatusCode})");
+
+        var el = await ReadLastJsonAsync(res);
+        var path = el?.GetProperty("Path").GetString();
+        // Expect /ipfs/<cid> or /ipns/… — if /ipns/ returns, we consider unresolved
+        if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/ipfs/", StringComparison.Ordinal))
+            throw new InvalidOperationException("IPNS resolution did not return an /ipfs/<cid> path.");
+        return path.Substring("/ipfs/".Length);
+    }
+
+    private async Task<bool> IsNameAvailableAsync(string name)
+    {
+        // 1) No duplicate in config
+        var cfg = ConfigSvc.Get();
+        if ((cfg.IpnsKeys ?? new()).Any(k => string.Equals(k.Name, name, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        // 2) No folder with same name OR name-v* under /production/pinned
+        var children = await ListMfsChildrenAsync(ManagedRoot);
+        if (children.ContainsKey(name)) return false;
+        var prefix = $"{name}-v";
+        if (children.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        return true;
+    }
+
+    private async Task<Dictionary<string, (string Cid, string Path)>> ListMfsChildrenAsync(string parent)
+    {
+        parent = IpfsGateway.NormalizeMfs(parent);
+        var rest = $"/api/v0/files/ls?arg={Uri.EscapeDataString(parent)}&long=true";
+        using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, HttpFactory, Keys);
+        var dict = new Dictionary<string, (string Cid, string Path)>(StringComparer.OrdinalIgnoreCase);
+        if (!res.IsSuccessStatusCode) return dict;
+
+        var el = await ReadLastJsonAsync(res);
+        if (el is null) return dict;
+        if (el.Value.TryGetProperty("Entries", out var arr) && arr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var e in arr.EnumerateArray())
+            {
+                var name = e.TryGetProperty("Name", out var n) ? n.GetString() ?? "" : "";
+                var cid = e.TryGetProperty("Hash", out var h) ? h.GetString() ?? "" : "";
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(cid)) continue;
+                var path = IpfsGateway.NormalizeMfs($"{parent}/{name}");
+                dict[name] = (cid, path);
+            }
+        }
+        return dict;
+    }
+
+    private static async Task<JsonElement?> ReadLastJsonAsync(HttpResponseMessage res)
+    {
+        var text = await res.Content.ReadAsStringAsync();
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        try { using var doc = JsonDocument.Parse(text); return doc.RootElement.Clone(); }
+        catch { }
+
+        foreach (var line in text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Reverse())
+        {
+            var t = line.Trim();
+            if (!t.StartsWith("{") || !t.EndsWith("}")) continue;
+            try { using var doc = JsonDocument.Parse(t); return doc.RootElement.Clone(); } catch { }
+        }
+        return null;
+    }
+
+    private async Task Copy(string s)
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", s);
+        Snackbar.Add("Copied to clipboard", Severity.Info);
+    }
+
+    private sealed class Row
+    {
+        public string Name { get; set; } = "";
+        public string Key { get; set; } = "";
+        public string? CurrentCid { get; set; }
+        public string? LatestCid { get; set; }
+        public bool AutoUpdate { get; set; }
+        public bool KeepOld { get; set; }
+        public string? ResolveError { get; set; }
+    }
+}

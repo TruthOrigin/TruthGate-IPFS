@@ -145,8 +145,15 @@
             new NavLink { Title = "Dashboard", Href = "/" },
             new NavLink { Title = "Web UI", Href = "/webui" },
             new NavLink { Title = "Domains", Href = "/domains" },
-            new NavLink { Title = "Pinned", Href = "/pinned" },
-
+            new NavCategory
+            {
+                Title = "Pinned",
+                Children = new List<NavLink>()
+                {
+                    new NavLink { Title = "Pinned CID's", Href = "/pinned" },
+                    new NavLink { Title = "Pinned IPNS", Href = "/pinned-ipns" },
+                }
+            },
             new NavCategory
             {
                 Title = "Settings",

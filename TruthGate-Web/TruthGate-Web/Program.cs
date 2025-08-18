@@ -41,6 +41,9 @@ builder.Services.AddServerSideBlazor()
 builder.Services.AddSingleton<IConfigService, ConfigService>();
 builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<IConfigService>());
 
+builder.Services.AddSingleton<IIpnsUpdateService, IpnsUpdateWorker>();
+builder.Services.AddHostedService(sp => (IpnsUpdateWorker)sp.GetRequiredService<IIpnsUpdateService>());
+
 builder.Services.AddMudServices();
 builder.Services.AddBlazoredLocalStorage();
 builder.Services.AddControllers();
