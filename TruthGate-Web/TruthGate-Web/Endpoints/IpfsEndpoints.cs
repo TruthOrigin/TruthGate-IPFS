@@ -141,7 +141,7 @@ namespace TruthGate_Web.Endpoints
                         return;
                     }
 
-                    var targetUriAuthedless = RequestHelpers.CombineTargetHttp("ipfs", rest, context, 9010);
+                    var targetUriAuthedless = RequestHelpers.CombineTargetHttp("ipfs", rest, context, 5001);
                     await IpfsGateway.Proxy(context, targetUriAuthedless, clientFactory);
                     return;
                 }
@@ -150,7 +150,7 @@ namespace TruthGate_Web.Endpoints
                 var fallbackCid = RequestHelpers.ExtractCidFromReferer(context.Request);
                 var normalizedRest = RequestHelpers.EnsureCidPrefix(rest, fallbackCid);
 
-                var targetUriAuthed = RequestHelpers.CombineTargetHttp("ipfs", normalizedRest, context, 9010);
+                var targetUriAuthed = RequestHelpers.CombineTargetHttp("ipfs", normalizedRest, context, 5001);
                 await IpfsGateway.Proxy(context, targetUriAuthed, clientFactory);
             });
 
