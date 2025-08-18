@@ -6,6 +6,7 @@ using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
 using Microsoft.AspNetCore.Identity;
 using TruthGate_Web.Services;
+using System.IO;
 
 namespace TruthGate_Web.Endpoints
 {
@@ -78,6 +79,55 @@ namespace TruthGate_Web.Endpoints
                 await context.Response.CompleteAsync();
             });
 
+
+
+            app.Map("/{**path}", async (
+    HttpContext context,
+    string? path,
+    IHttpClientFactory clientFactory) =>
+            {
+                if (path != null && path.EndsWith("manifest.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"[TruthGate][IPFS] Manifest request detected: /ipfs/{path}");
+                    Console.WriteLine($"  Full URL: {context.Request.Path + context.Request.QueryString}");
+                    Console.WriteLine($"  From IP: {context.Connection.RemoteIpAddress}");
+                }
+
+                // Only handle our special query marker
+                if (!context.Request.Query.ContainsKey("tgcid"))
+                    return; // let the rest of the pipeline handle it
+
+               
+
+                var cid = context.Request.Query["tgcid"].ToString();
+                if (string.IsNullOrWhiteSpace(cid))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync("Missing tgcid");
+                    return;
+                }
+
+                // Normalize requested path (strip leading '/')
+                var cleanPath = (path ?? "").TrimStart('/');
+
+                // Safety: block path traversal
+                if (cleanPath.Contains(".."))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync("Invalid path");
+                    return;
+                }
+
+                // Build the internal /ipfs/<cid>/<path> target
+                var normalizedRest = string.IsNullOrEmpty(cleanPath) ? cid : $"{cid}/{cleanPath}";
+                var targetUri = RequestHelpers.CombineTargetHttp("ipfs", normalizedRest, context, 9010);
+
+                // Proxy straight through (no HTML rewriting here)
+                await IpfsGateway.Proxy(context, targetUri, clientFactory, rewriteIndexForCid: false);
+            });
+
+
+
             // --- /ipfs/{**rest} (requires rest) ---
             app.Map("/ipfs/{**rest}", async (
                 HttpContext context, string rest,
@@ -89,6 +139,11 @@ namespace TruthGate_Web.Endpoints
                 var mfsPath = DomainHelpers.GetMappedDomain(context);
                 if (!string.IsNullOrWhiteSpace(mfsPath))
                     return;
+
+                if (context.Request.Query.ContainsKey("tgcid"))
+                {
+                    Console.WriteLine($"[TG] tgcid hit: {rest}");
+                }
 
                 if (TruthGate_Web.Utils.DomainHelpers.IsMappedDomain(context))
                 {

@@ -130,7 +130,7 @@ namespace TruthGate_Web.Endpoints
                 }
 
                 // 5) Proxy onward
-                var targetUri = RequestHelpers.CombineTarget("api", rest, context);
+                var targetUri = RequestHelpers.CombineTarget("api/v0", rest, context);
                 await IpfsGateway.Proxy(context, targetUri, clientFactory);
             });
 

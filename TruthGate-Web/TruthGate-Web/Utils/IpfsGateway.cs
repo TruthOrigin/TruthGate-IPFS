@@ -694,30 +694,31 @@ namespace TruthGate_Web.Utils
 
             if (rewriteIndexForCid && isHtml && !string.IsNullOrWhiteSpace(basePrefix))
             {
-                // Buffer body
                 var html = await responseMessage.Content.ReadAsStringAsync(context.RequestAborted);
 
-                // 1) Ensure <base> exists (fixes most relative URLs)
-                //    If there is already a <base>, we leave it alone; otherwise inject after <head>.
+                // Insert <base> for everything else
                 if (!html.Contains("<base", StringComparison.OrdinalIgnoreCase))
-                {
                     html = InjectAfterHead(html, $"<base href=\"{basePrefix}\" />");
-                }
 
-                // 2) Rewrite root-relative URLs in href/src/action attributes:
-                //    href="/x" -> href="/ipfs/<cid>/x"
-                html = RewriteRootRelativeAttributes(html, basePrefix);
+                // 1) Rewrite root-relative attributes to include the base, EXCEPT .json/.js (we'll handle those next)
+                html = RewriteRootRelativeAttributesButSkipJsonJs(html, basePrefix);
 
-                // 3) Inject a runtime patch to fix fetch/XHR/WebSocket + link clicks for safety
+                // 2) For any .json or .js in href/src/action, force ABSOLUTE-ROOT path and append tgcid + ts.
+                html = AppendQueryForJsonJsKeepOrigin(html, basePrefix);
+
+                // 3) Early cleanup (SW + caches + IndexedDB) BEFORE anything else runs
+                html = InjectBeforeHeadEnd(html, ServiceWorkerAndStorageCleanupScript());
+
+                // 4) Runtime patch for fetch/XHR/WS and 127.0.0.1 block (aware of ?tgcid)
                 html = InjectBeforeBodyEnd(html, RuntimePrefixScript(basePrefix));
 
-                // Fix content length, set type
                 var bytes = System.Text.Encoding.UTF8.GetBytes(html);
                 context.Response.Headers["Content-Length"] = bytes.Length.ToString();
                 context.Response.ContentType = "text/html; charset=utf-8";
                 await context.Response.Body.WriteAsync(bytes, 0, bytes.Length, context.RequestAborted);
                 return isOk;
             }
+
 
             // Default: stream body through untouched
             await responseMessage.Content.CopyToAsync(context.Response.Body, context.RequestAborted);
@@ -766,36 +767,211 @@ namespace TruthGate_Web.Utils
             return html;
         }
 
+        static string InjectBeforeHeadEnd(string html, string inject)
+        {
+            var idx = html.LastIndexOf("</head", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return inject + html; // no <head>, prepend
+            return html.Insert(idx, "\n" + inject + "\n");
+        }
+
+        // Rewrite href/src/action that start with "/" BUT SKIP .json/.js
+        static string RewriteRootRelativeAttributesButSkipJsonJs(string html, string prefix)
+        {
+            string[] attrs = { "href", "src", "action" };
+            foreach (var attr in attrs)
+            {
+                // double-quoted
+                html = System.Text.RegularExpressions.Regex.Replace(
+                    html,
+                    $@"(?ix)
+               \b{attr}\s*=\s*""/(?!ipfs/|ipns/)([^""]+?)""   # root-relative
+               (?![^""]*\.(?:json|js)"" )                    # but not ending with .json or .js
+            ",
+                    m => {
+                        var url = m.Groups[1].Value; // without leading slash
+                        return $"{attr}=\"{prefix}{url}\"";
+                    });
+
+                // single-quoted
+                html = System.Text.RegularExpressions.Regex.Replace(
+                    html,
+                    $@"(?ix)
+               \b{attr}\s*=\s*'/(?!ipfs/|ipns/)([^']+?)'      # root-relative
+               (?![^']*\.(?:json|js)' )                       # but not ending with .json or .js
+            ",
+                    m => {
+                        var url = m.Groups[1].Value;
+                        return $"{attr}='{prefix}{url}'";
+                    });
+            }
+            return html;
+        }
+
+        // For any href/src/action that points to *.json or *.js,
+        // leave it same-origin (force absolute-root) and append ?tgcid=<cid>&ts=<unix>
+        // Use this instead of the previous AppendQueryForJsonJsKeepOrigin
+        // unchanged signature, just ensure it ALWAYS outputs "/<path>?...":
+        static string AppendQueryForJsonJsKeepOrigin(string html, string basePrefix)
+        {
+            var (qKey, qVal) = ExtractIdKeyAndValueFromBase(basePrefix);
+            var ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+
+            string AddOrAppendPreservingQuery(string url)
+            {
+                var u = (url ?? "").Trim();
+
+                // leave absolute http(s) alone
+                if (u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                    u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    return url;
+
+                // *** Force absolute-root, collapsing "./" and extra "/" ***
+                u = "/" + u.TrimStart('.', '/');
+
+                // split, merge query, add tgcid/tgipns + ts
+                string path, query;
+                var qIdx = u.IndexOf('?', StringComparison.Ordinal);
+                if (qIdx >= 0) { path = u[..qIdx]; query = u[(qIdx + 1)..]; }
+                else { path = u; query = string.Empty; }
+
+                var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (!string.IsNullOrEmpty(query))
+                {
+                    foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var k = part; var v = "";
+                        var i = part.IndexOf('=');
+                        if (i >= 0) { k = part[..i]; v = part[(i + 1)..]; }
+                        dict[Uri.UnescapeDataString(k)] = Uri.UnescapeDataString(v);
+                    }
+                }
+                dict[qKey] = qVal;
+                dict["ts"] = ts;
+
+                var rebuilt = string.Join("&", dict.Select(kv =>
+                    string.IsNullOrEmpty(kv.Value) ? Uri.EscapeDataString(kv.Key)
+                                                   : $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
+
+                return $"{path}?{rebuilt}";
+            }
+
+            string[] attrs = { "href", "src", "action" };
+            foreach (var attr in attrs)
+            {
+                // double-quoted
+                html = System.Text.RegularExpressions.Regex.Replace(
+                    html,
+                    $@"(?ix)\b{attr}\s*=\s*""([^""]*\.(?:json|js|webmanifest)(?:\?[^""]*)?)""",
+                    m => $"{attr}=\"{AddOrAppendPreservingQuery(m.Groups[1].Value)}\"");
+
+                // single-quoted
+                html = System.Text.RegularExpressions.Regex.Replace(
+                    html,
+                    $@"(?ix)\b{attr}\s*=\s*'([^']*\.(?:json|js|webmanifest)(?:\?[^']*)?)'",
+                    m => $"{attr}='{AddOrAppendPreservingQuery(m.Groups[1].Value)}'");
+            }
+            return html;
+        }
+
+
+
+        // Decide query key + value based on /ipfs/<cid>/ vs /ipns/<name>/
+        static (string key, string value) ExtractIdKeyAndValueFromBase(string basePrefix)
+        {
+            var parts = basePrefix.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+            {
+                if (parts[0].Equals("ipfs", StringComparison.OrdinalIgnoreCase))
+                    return ("tgcid", parts[1]);
+                if (parts[0].Equals("ipns", StringComparison.OrdinalIgnoreCase))
+                    return ("tgipns", parts[1]);
+            }
+            return ("tgcid", ""); // fallback (shouldn’t happen if basePrefix is correct)
+        }
+
+        static string ServiceWorkerAndStorageCleanupScript() => @"
+<script>
+(function() {
+  // Unregister all service workers ASAP
+  if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+    navigator.serviceWorker.getRegistrations().then(function(regs) {
+      regs.forEach(function(r){ r.unregister().catch(()=>{}); });
+    }).catch(()=>{});
+  }
+
+  // Clear Cache Storage
+  if (window.caches && caches.keys) {
+    caches.keys().then(function(keys){
+      return Promise.all(keys.map(function(k){ return caches.delete(k); }));
+    }).catch(()=>{});
+  }
+
+  // Nuke IndexedDB databases (best-effort)
+  try {
+    if (indexedDB.databases) {
+      indexedDB.databases().then(function(list){
+        (list || []).forEach(function(db){
+          if (db && db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e){} }
+        });
+      }).catch(()=>{});
+    }
+  } catch(e) { /* older browsers */ }
+})();
+</script>";
+
+
         static string RuntimePrefixScript(string basePrefix)
         {
             return $@"
 <script>
 (function() {{
   var BASE = {System.Text.Json.JsonSerializer.Serialize(basePrefix)};
-  var BLOCKED_HOST = '127.0.0.1:5001';
 
-  function qualify(u) {{
-    try {{
-      if (!u) return u;
-      if (typeof u !== 'string') return u;
-
-      // Absolute external URLs: block 127.0.0.1:5001
-      if (u.startsWith('http://127.0.0.1:5001') || u.startsWith('https://127.0.0.1:5001')) {{
-        throw new Error('Blocked request to local IPFS node');
-      }}
-
-      if (u.startsWith('http://') || u.startsWith('https://')) return u;
-      if (u.startsWith('/ipfs/') || u.startsWith('/ipns/')) return u;
-
-      if (u.startsWith('/')) return BASE + u.substring(1);
-      return BASE + u;
-    }} catch (e) {{
-      console.warn(e.message || e, u);
-      return ''; // swallow the bad URL
-    }}
+  function isBlockedLocal(u) {{
+    return typeof u === 'string' &&
+           (u.startsWith('http://127.0.0.1:5001') || u.startsWith('https://127.0.0.1:5001') ||
+            u.startsWith('http://localhost:5001') || u.startsWith('https://localhost:5001'));
   }}
 
-  // Patch fetch
+  function isJsonJs(u) {{
+    return /\\.(json|js)(\\?|$)/i.test(u);
+  }}
+
+  function hasTgcid(u) {{
+    return /[?&]tgcid=/.test(u);
+  }}
+
+  function qualify(u) {{
+  try {{
+    if (!u || typeof u !== 'string') return u;
+
+    if (isBlockedLocal(u)) throw new Error('Blocked request to local node');
+
+    // Absolute http(s): leave alone
+    if (u.startsWith('http://') || u.startsWith('https://')) return u;
+
+    // JSON/JS (and URLs already carrying tgcid/tgipns):
+    // - If already root-absolute, return as-is.
+    // - If relative (e.g., ""./manifest.json""), force to ""/manifest.json""
+    if (isJsonJs(u) || hasTgcid(u)) {{
+      if (u.startsWith('/')) return u;
+      return '/' + u.replace(/^[./]+/, '');
+    }}
+
+    // Already ipfs/ipns → leave
+    if (u.startsWith('/ipfs/') || u.startsWith('/ipns/')) return u;
+
+    // Non JSON/JS: route under BASE
+    if (u.startsWith('/')) return BASE + u.substring(1);
+    return BASE + u;
+  }} catch (e) {{
+    console.warn(e.message || e, u);
+    return '';
+  }}
+}}
+
+
+  // fetch
   var _fetch = window.fetch;
   window.fetch = function(input, init) {{
     try {{
@@ -807,13 +983,11 @@ namespace TruthGate_Web.Utils
         if (!newUrl) return Promise.reject('Blocked request');
         input = new Request(newUrl, input);
       }}
-    }} catch (e) {{
-      return Promise.reject(e);
-    }}
+    }} catch (e) {{ return Promise.reject(e); }}
     return _fetch(input, init);
   }};
 
-  // Patch XHR
+  // XHR
   var _open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url, async, user, pass) {{
     var newUrl = qualify(url);
@@ -821,31 +995,34 @@ namespace TruthGate_Web.Utils
     return _open.call(this, method, newUrl, async, user, pass);
   }};
 
-  // Patch WebSocket
+  // WebSocket
   var _WS = window.WebSocket;
   window.WebSocket = function(url, protocols) {{
-    var newUrl = qualify(url);
-    if (!newUrl) throw new Error('Blocked WebSocket request');
-    if (newUrl.startsWith('http')) {{
-      newUrl = newUrl.replace(/^http(s?):/i, 'ws$1:');
-    }}
-    return new _WS(newUrl, protocols);
+    if (isBlockedLocal(url)) throw new Error('Blocked WebSocket to local node');
+    var q = qualify(url);
+    if (!q) throw new Error('Blocked WebSocket request');
+    if (q.startsWith('http')) q = q.replace(/^http(s?):/i, 'ws$1:');
+    return new _WS(q, protocols);
   }};
 
-  // Intercept <a> clicks
+  // Anchor clicks (respect ?tgcid URLs and block localhost)
   document.addEventListener('click', function(ev) {{
     var a = ev.target.closest && ev.target.closest('a[href]');
     if (!a) return;
     var href = a.getAttribute('href');
     if (!href) return;
 
-    if (href.startsWith('http://127.0.0.1:5001') || href.startsWith('https://127.0.0.1:5001')) {{
+    if (isBlockedLocal(href)) {{
       ev.preventDefault();
       console.warn('Blocked navigation to local node:', href);
       return;
     }}
 
+    // Absolute external stays
     if (href.startsWith('http://') || href.startsWith('https://')) return;
+
+    // JSON/JS or ?tgcid : leave as-is (root-absolute expected)
+    if (/\\.(json|js)(\\?|$)/i.test(href) || /[?&]tgcid=/.test(href)) return;
 
     if (href.startsWith('/') || !href.startsWith('#')) {{
       ev.preventDefault();
@@ -857,6 +1034,7 @@ namespace TruthGate_Web.Utils
 }})();
 </script>";
         }
+
 
 
 
