@@ -60,6 +60,69 @@ namespace TruthGate_Web.Utils
         }
 
         /// <summary>
+        /// Resolve an /ipns/&lt;name&gt; to a root CID using the node API via your proxy pipeline.
+        /// No caching by design (IPNS can change; you asked to keep it fresh).
+        /// Returns <c>null</c> if resolve fails or the result is not an /ipfs/&lt;cid&gt; path.
+        /// </summary>
+        public static async Task<string?> ResolveIpnsToCidAsync(
+            string ipnsName,
+            IHttpClientFactory clientFactory,
+            IApiKeyProvider keys)
+        {
+            // Sanitize: single-leaf only (no slashes/traversal)
+            var safe = ToSafeLeaf(ipnsName);
+            if (safe is null) return null;
+
+            // Build REST path for your proxy pipeline (not a full URL)
+            // /api/v0/resolve?arg=/ipns/<name>&recursive=true
+            // (recursive=true lets IPNS/DNSLink chase whatever it needs to reach the current record)
+            var arg = $"/ipns/{safe}";
+            var rest = $"/api/v0/resolve?arg={Uri.EscapeDataString(arg)}&recursive=true";
+
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, clientFactory, keys);
+            if (!res.IsSuccessStatusCode) return null;
+
+            var payload = await res.Content.ReadAsStringAsync();
+
+            // The HTTP API may return:
+            //   1) JSON: {"Path":"/ipfs/<cid>[...optional subpath]"}
+            //   2) Plain text: "/ipfs/<cid>[...optional subpath]\n"
+            // We’ll accept both, then extract the leading CID.
+            string? path = null;
+
+            // Try JSON first
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (doc.RootElement.TryGetProperty("Path", out var pathProp))
+                {
+                    path = pathProp.GetString();
+                }
+            }
+            catch
+            {
+                // Not JSON; fall back to plaintext
+            }
+
+            if (string.IsNullOrWhiteSpace(path))
+                path = payload.Trim();
+
+            if (string.IsNullOrWhiteSpace(path)) return null;
+
+            // Expect something like "/ipfs/<cid>" or "/ipfs/<cid>/sub/path"
+            // Extract the CID (the first segment after /ipfs/)
+            if (!path.StartsWith("/ipfs/", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var after = path.Substring("/ipfs/".Length).Trim('/');
+            var firstSeg = after.Split('/', 2)[0];
+
+            // Basic sanity: ensure it looks like a CID (we'll accept and let downstream validate further)
+            // If you want to be stricter, you can add a CID regex or call /cid/format.
+            return string.IsNullOrWhiteSpace(firstSeg) ? null : firstSeg;
+        }
+
+        /// <summary>
         /// Formats a CID via /api/v0/cid/format using the TruthGate proxy pipeline.
         /// Returns null if conversion isn’t possible (e.g., v0 constraints) or the node rejects it.
         /// </summary>

@@ -17,9 +17,9 @@
         <MudText Typo="Typo.h3">Pinned Content</MudText>
         <br />
         <MudButton Variant="Variant.Filled"
-                   Color="Color.Primary"
-                   StartIcon="@Icons.Material.Filled.PushPin"
-                   OnClick="OnAddPinned">
+        Color="Color.Primary"
+        StartIcon="@Icons.Material.Filled.PushPin"
+        OnClick="OnAddPinned">
             Add Pinned Item
         </MudButton>
     </div>
@@ -38,10 +38,10 @@
     <MudTable Items="_items" Dense="true" Hover="true" Bordered="true" Loading="_loading">
         <ToolBarContent>
             <MudTextField @bind-Value="_search"
-                          Placeholder="Search by name or CID..."
-                          Adornment="Adornment.Start"
-                          AdornmentIcon="@Icons.Material.Filled.Search"
-                          Class="w-full md:w-96" />
+            Placeholder="Search by name or CID..."
+            Adornment="Adornment.Start"
+            AdornmentIcon="@Icons.Material.Filled.Search"
+            Class="w-full md:w-96" />
             <MudSpacer />
             <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="Reload">Refresh</MudButton>
         </ToolBarContent>
@@ -106,10 +106,10 @@
                 @if (context.CanDelete)
                 {
                     <MudButton Size="Size.Small"
-                               Variant="Variant.Outlined"
-                               Color="Color.Error"
-                               StartIcon="@Icons.Material.Filled.DeleteForever"
-                               OnClick="@(() => OnDelete(context))">
+                    Variant="Variant.Outlined"
+                    Color="Color.Error"
+                    StartIcon="@Icons.Material.Filled.DeleteForever"
+                    OnClick="@(() => OnDelete(context))">
                         Delete
                     </MudButton>
                 }
@@ -119,9 +119,9 @@
                      ? "Deletion disabled"
                      : context.DeleteDisabledReason)">
                         <MudButton Size="Size.Small"
-                                   Variant="Variant.Outlined"
-                                   Disabled="true"
-                                   StartIcon="@Icons.Material.Filled.DeleteForever">
+                        Variant="Variant.Outlined"
+                        Disabled="true"
+                        StartIcon="@Icons.Material.Filled.DeleteForever">
                             Delete
                         </MudButton>
                     </MudTooltip>
@@ -274,8 +274,14 @@
 
     private async Task OnAddPinned()
     {
+        var options = new DialogOptions
+            {
+                CloseOnEscapeKey = false,
+                CloseButton = true,
+                MaxWidth = MaxWidth.Medium
+            };
         var parameters = new DialogParameters<AddPinnedItemDialog>();
-        var dialog = Dialogs.Show<AddPinnedItemDialog>("Add Pinned Item", parameters);
+        var dialog = Dialogs.Show<AddPinnedItemDialog>("Add Pinned Item", parameters, options);
         var result = await dialog.Result;
 
         if (result.Canceled || result.Data is not AddPinnedItemDialog.AddPinnedResult r) return;

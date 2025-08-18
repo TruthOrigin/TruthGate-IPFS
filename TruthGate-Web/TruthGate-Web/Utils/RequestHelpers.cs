@@ -80,5 +80,64 @@ namespace TruthGate_Web.Utils
             var q = ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value : "";
             return $"http://127.0.0.1:{httpPort}/{prefix}/{rest}{q}";
         }
+
+        /// <summary>
+        /// If the incoming request path is missing the IPNS name, try to recover it
+        /// from the Referer header, assuming the referer looked like /ipns/&lt;name&gt;/...
+        /// </summary>
+        public static string? ExtractIpnsFromReferer(HttpRequest request)
+        {
+            var referer = request.Headers["Referer"].ToString();
+            if (string.IsNullOrWhiteSpace(referer)) return null;
+
+            if (!Uri.TryCreate(referer, UriKind.Absolute, out var uri))
+                return null;
+
+            var path = uri.AbsolutePath ?? string.Empty;
+            // Expect: /ipns/<name>[/...]
+            // We only need the first segment after /ipns/
+            var trimmed = path.Trim('/');
+            if (trimmed.Length == 0) return null;
+
+            var parts = trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return null;
+
+            if (!parts[0].Equals("ipns", StringComparison.OrdinalIgnoreCase)) return null;
+            if (parts.Length < 2) return null;
+
+            var candidate = parts[1].Trim();
+            if (string.IsNullOrWhiteSpace(candidate)) return null;
+
+            // Safety: no slashes in the "name" itself
+            candidate = candidate.Replace('\\', '/').Trim('/');
+            if (candidate.Contains('/') || candidate.Contains("..")) return null;
+
+            return candidate;
+        }
+
+        /// <summary>
+        /// Ensures the first segment of "rest" is an IPNS name.
+        /// If missing, prefixes with the provided fallbackName.
+        /// </summary>
+        public static string EnsureIpnsPrefix(string rest, string? fallbackName)
+        {
+            var s = (rest ?? string.Empty);
+            var trimmed = s.Trim('/');
+
+            // If empty and we have a fallback, just return "<fallback>"
+            if (string.IsNullOrWhiteSpace(trimmed))
+                return string.IsNullOrWhiteSpace(fallbackName) ? s : $"{fallbackName}";
+
+            var firstSeg = trimmed.Split('/', 2)[0];
+
+            // If the caller already provided a first segment, keep as-is
+            if (!string.IsNullOrWhiteSpace(firstSeg))
+                return trimmed; // normalized to no leading slash
+
+            // Otherwise, prefix with fallback if available
+            return string.IsNullOrWhiteSpace(fallbackName)
+                ? trimmed
+                : $"{fallbackName}/{trimmed}";
+        }
     }
 }
