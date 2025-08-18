@@ -41,6 +41,12 @@ builder.Services.AddServerSideBlazor()
 builder.Services.AddSingleton<IConfigService, ConfigService>();
 builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<IConfigService>());
 
+builder.Services.Configure<IpnsUpdateOptions>(o =>
+{
+    o.MaxConcurrency = 4;                          // tune as you like
+    o.ScheduledPerKeyCooldown = TimeSpan.FromMinutes(10);
+});
+
 builder.Services.AddSingleton<IIpnsUpdateService, IpnsUpdateWorker>();
 builder.Services.AddHostedService(sp => (IpnsUpdateWorker)sp.GetRequiredService<IIpnsUpdateService>());
 
