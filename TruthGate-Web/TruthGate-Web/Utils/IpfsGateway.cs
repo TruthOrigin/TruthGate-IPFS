@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Primitives;
 using System.Collections.Concurrent;
+using System.Reflection.Metadata;
 using System.Text.Json;
 using TruthGate_Web.Endpoints;
 using TruthGate_Web.Services;
@@ -588,112 +589,276 @@ namespace TruthGate_Web.Utils
         }
 
         // ----- Proxy -----
-        public static async Task<bool> Proxy(HttpContext context, string targetUri, IHttpClientFactory clientFactory)
-{
-    var method = context.Request.Method;
-    var client = clientFactory.CreateClient();
-
-    // Build outbound request
-    HttpContent? content = null;
-    if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method))
-    {
-        content = (context.Request.ContentLength is null or 0)
-            ? new StringContent("")
-            : new StreamContent(context.Request.Body);
-    }
-
-    var forwardRequest = new HttpRequestMessage(new HttpMethod(method), targetUri)
-    {
-        Content = content
-    };
-
-    // Copy headers, but strip conditionals that trigger 304s (especially for /webui)
-    static bool IsConditionalHeader(string key) =>
-        key.Equals("If-None-Match", StringComparison.OrdinalIgnoreCase) ||
-        key.Equals("If-Modified-Since", StringComparison.OrdinalIgnoreCase) ||
-        key.Equals("If-Match", StringComparison.OrdinalIgnoreCase) ||
-        key.Equals("If-Unmodified-Since", StringComparison.OrdinalIgnoreCase) ||
-        key.Equals("If-Range", StringComparison.OrdinalIgnoreCase) ||
-        key.Equals("Cache-Control", StringComparison.OrdinalIgnoreCase) ||
-        key.Equals("Pragma", StringComparison.OrdinalIgnoreCase);
-
-    foreach (var header in context.Request.Headers)
-    {
-        if (header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase)) continue;
-        if (IsConditionalHeader(header.Key)) continue;
-
-        if (!forwardRequest.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
+        public static async Task<bool> Proxy(
+    HttpContext context,
+    string targetUri,
+    IHttpClientFactory clientFactory,
+    bool rewriteIndexForCid = false,
+    string? basePrefix = null) // e.g. "/ipfs/<cid>/" or "/ipns/<name>/"
         {
-            forwardRequest.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
-        }
-    }
+            var method = context.Request.Method;
+            var client = clientFactory.CreateClient();
 
-    // Send
-    using var responseMessage = await client.SendAsync(
-        forwardRequest,
-        HttpCompletionOption.ResponseHeadersRead,
-        context.RequestAborted);
-
-    // Set status
-    context.Response.StatusCode = (int)responseMessage.StatusCode;
-
-    // Copy response headers (rewrite Location if it points to localhost:5001 etc.)
-    foreach (var header in responseMessage.Headers)
-        context.Response.Headers[header.Key] = header.Value.ToArray();
-    foreach (var header in responseMessage.Content.Headers)
-        context.Response.Headers[header.Key] = header.Value.ToArray();
-
-    // Hop-by-hop headers: remove what can break Kestrel
-    context.Response.Headers.Remove("transfer-encoding");
-    context.Response.Headers.Remove("Connection");
-    context.Response.Headers.Remove("Keep-Alive");
-    context.Response.Headers.Remove("Proxy-Authenticate");
-    context.Response.Headers.Remove("Proxy-Authorization");
-    context.Response.Headers.Remove("TE");
-    context.Response.Headers.Remove("Trailer");
-    context.Response.Headers.Remove("Upgrade");
-
-    // CORS (if desired)
-    context.Response.Headers["Access-Control-Allow-Origin"] = "*";
-    context.Response.Headers["Access-Control-Allow-Headers"] = "*";
-    context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
-
-    // --- Location rewrite ---
-    if (context.Response.Headers.TryGetValue("Location", out var locations) && locations.Count > 0)
-    {
-        // If node redirected to http://127.0.0.1:5001/..., rewrite to our origin with same path+query
-        if (Uri.TryCreate(locations[0], UriKind.Absolute, out var locUri))
-        {
-            if ((locUri.Host.Equals("127.0.0.1") || locUri.Host.Equals("localhost")) && locUri.IsAbsoluteUri)
+            // Build outbound request
+            HttpContent? content = null;
+            if (!HttpMethods.IsGet(method) && !HttpMethods.IsHead(method))
             {
-                var builder = new UriBuilder
-                {
-                    Scheme = context.Request.Scheme,
-                    Host = context.Request.Host.Host,
-                    Port = context.Request.Host.Port ?? -1,
-                    Path = locUri.AbsolutePath,
-                    Query = locUri.Query
-                };
-                context.Response.Headers["Location"] = builder.Uri.ToString();
+                content = (context.Request.ContentLength is null or 0)
+                    ? new StringContent("")
+                    : new StreamContent(context.Request.Body);
             }
+
+            var forwardRequest = new HttpRequestMessage(new HttpMethod(method), targetUri)
+            {
+                Content = content
+            };
+
+            // Copy headers minus conditionals ...
+            static bool IsConditionalHeader(string key) =>
+                key.Equals("If-None-Match", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Modified-Since", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Match", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Unmodified-Since", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("If-Range", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("Cache-Control", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("Pragma", StringComparison.OrdinalIgnoreCase);
+
+            foreach (var header in context.Request.Headers)
+            {
+                if (header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsConditionalHeader(header.Key)) continue;
+                if (!forwardRequest.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
+                    forwardRequest.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+            }
+
+            using var responseMessage = await client.SendAsync(
+                forwardRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                context.RequestAborted);
+
+            context.Response.StatusCode = (int)responseMessage.StatusCode;
+
+            // Copy response headers first (we may override later)
+            foreach (var header in responseMessage.Headers)
+                context.Response.Headers[header.Key] = header.Value.ToArray();
+            foreach (var header in responseMessage.Content.Headers)
+                context.Response.Headers[header.Key] = header.Value.ToArray();
+
+            // Hop-by-hop cleanup
+            context.Response.Headers.Remove("transfer-encoding");
+            context.Response.Headers.Remove("Connection");
+            context.Response.Headers.Remove("Keep-Alive");
+            context.Response.Headers.Remove("Proxy-Authenticate");
+            context.Response.Headers.Remove("Proxy-Authorization");
+            context.Response.Headers.Remove("TE");
+            context.Response.Headers.Remove("Trailer");
+            context.Response.Headers.Remove("Upgrade");
+
+            // CORS
+            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+            context.Response.Headers["Access-Control-Allow-Headers"] = "*";
+            context.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
+
+            // Location rewrite (your existing code)
+            if (context.Response.Headers.TryGetValue("Location", out var locations) && locations.Count > 0)
+            {
+                if (Uri.TryCreate(locations[0], UriKind.Absolute, out var locUri))
+                {
+                    if ((locUri.Host.Equals("127.0.0.1") || locUri.Host.Equals("localhost")) && locUri.IsAbsoluteUri)
+                    {
+                        var builder = new UriBuilder
+                        {
+                            Scheme = context.Request.Scheme,
+                            Host = context.Request.Host.Host,
+                            Port = context.Request.Host.Port ?? -1,
+                            Path = locUri.AbsolutePath,
+                            Query = locUri.Query
+                        };
+                        context.Response.Headers["Location"] = builder.Uri.ToString();
+                    }
+                }
+            }
+
+            var isOk = (int)responseMessage.StatusCode < 400;
+
+            if (responseMessage.StatusCode == System.Net.HttpStatusCode.NotModified ||
+                HttpMethods.IsHead(method))
+            {
+                await context.Response.CompleteAsync();
+                return isOk;
+            }
+
+            // --- Conditional HTML index rewriting ---
+            var contentType = responseMessage.Content.Headers.ContentType?.MediaType ?? "";
+            var isHtml = contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase);
+
+            if (rewriteIndexForCid && isHtml && !string.IsNullOrWhiteSpace(basePrefix))
+            {
+                // Buffer body
+                var html = await responseMessage.Content.ReadAsStringAsync(context.RequestAborted);
+
+                // 1) Ensure <base> exists (fixes most relative URLs)
+                //    If there is already a <base>, we leave it alone; otherwise inject after <head>.
+                if (!html.Contains("<base", StringComparison.OrdinalIgnoreCase))
+                {
+                    html = InjectAfterHead(html, $"<base href=\"{basePrefix}\" />");
+                }
+
+                // 2) Rewrite root-relative URLs in href/src/action attributes:
+                //    href="/x" -> href="/ipfs/<cid>/x"
+                html = RewriteRootRelativeAttributes(html, basePrefix);
+
+                // 3) Inject a runtime patch to fix fetch/XHR/WebSocket + link clicks for safety
+                html = InjectBeforeBodyEnd(html, RuntimePrefixScript(basePrefix));
+
+                // Fix content length, set type
+                var bytes = System.Text.Encoding.UTF8.GetBytes(html);
+                context.Response.Headers["Content-Length"] = bytes.Length.ToString();
+                context.Response.ContentType = "text/html; charset=utf-8";
+                await context.Response.Body.WriteAsync(bytes, 0, bytes.Length, context.RequestAborted);
+                return isOk;
+            }
+
+            // Default: stream body through untouched
+            await responseMessage.Content.CopyToAsync(context.Response.Body, context.RequestAborted);
+            return isOk;
         }
-    }
 
-    // Consider 2xx **and** 3xx responses as "proxy success"
-    var isOk = (int)responseMessage.StatusCode < 400;
+        // --- Small HTML helpers (no external deps) ---
 
-    // Never write a body for 304/HEAD
-    if (responseMessage.StatusCode == System.Net.HttpStatusCode.NotModified ||
-        HttpMethods.IsHead(method))
-    {
-        await context.Response.CompleteAsync();
-        return isOk;
-    }
+        static string InjectAfterHead(string html, string inject)
+        {
+            var idx = html.IndexOf("<head", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return html; // no head tag, skip
+            var close = html.IndexOf(">", idx);
+            if (close < 0) return html;
+            return html.Insert(close + 1, "\n" + inject + "\n");
+        }
 
-    // Stream body
-    await responseMessage.Content.CopyToAsync(context.Response.Body);
-    return isOk;
-}
+        static string InjectBeforeBodyEnd(string html, string inject)
+        {
+            var idx = html.LastIndexOf("</body", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return html + inject; // no closing body tag, just append
+            return html.Insert(idx, "\n" + inject + "\n");
+        }
+
+        // Replace href="/..." | src="/..." | action="/..." with the CID/IPNS prefix.
+        // Avoid double-prefixing /ipfs/ or /ipns/.
+        static string RewriteRootRelativeAttributes(string html, string prefix)
+        {
+            // very targeted and safe-ish replacements without pulling a full HTML parser
+            // patterns: href="/x", src="/x", action="/x"
+            string[] attrs = { "href", "src", "action" };
+            foreach (var attr in attrs)
+            {
+                // attr="/..."
+                html = System.Text.RegularExpressions.Regex.Replace(
+                    html,
+                    $@"(?i)\b{attr}\s*=\s*""/(?!ipfs/|ipns/)([^""]*)""",
+                    $"{attr}=\"{prefix}$1\"");
+
+                // attr='/...'
+                html = System.Text.RegularExpressions.Regex.Replace(
+                    html,
+                    $@"(?i)\b{attr}\s*=\s*'/(?!ipfs/|ipns/)([^']*)'",
+                    $"{attr}='{prefix}$1'");
+            }
+            return html;
+        }
+
+        static string RuntimePrefixScript(string basePrefix)
+        {
+            return $@"
+<script>
+(function() {{
+  var BASE = {System.Text.Json.JsonSerializer.Serialize(basePrefix)};
+  var BLOCKED_HOST = '127.0.0.1:5001';
+
+  function qualify(u) {{
+    try {{
+      if (!u) return u;
+      if (typeof u !== 'string') return u;
+
+      // Absolute external URLs: block 127.0.0.1:5001
+      if (u.startsWith('http://127.0.0.1:5001') || u.startsWith('https://127.0.0.1:5001')) {{
+        throw new Error('Blocked request to local IPFS node');
+      }}
+
+      if (u.startsWith('http://') || u.startsWith('https://')) return u;
+      if (u.startsWith('/ipfs/') || u.startsWith('/ipns/')) return u;
+
+      if (u.startsWith('/')) return BASE + u.substring(1);
+      return BASE + u;
+    }} catch (e) {{
+      console.warn(e.message || e, u);
+      return ''; // swallow the bad URL
+    }}
+  }}
+
+  // Patch fetch
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {{
+    try {{
+      if (typeof input === 'string') {{
+        input = qualify(input);
+        if (!input) return Promise.reject('Blocked request');
+      }} else if (input && input.url) {{
+        var newUrl = qualify(input.url);
+        if (!newUrl) return Promise.reject('Blocked request');
+        input = new Request(newUrl, input);
+      }}
+    }} catch (e) {{
+      return Promise.reject(e);
+    }}
+    return _fetch(input, init);
+  }};
+
+  // Patch XHR
+  var _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url, async, user, pass) {{
+    var newUrl = qualify(url);
+    if (!newUrl) throw new Error('Blocked XHR request');
+    return _open.call(this, method, newUrl, async, user, pass);
+  }};
+
+  // Patch WebSocket
+  var _WS = window.WebSocket;
+  window.WebSocket = function(url, protocols) {{
+    var newUrl = qualify(url);
+    if (!newUrl) throw new Error('Blocked WebSocket request');
+    if (newUrl.startsWith('http')) {{
+      newUrl = newUrl.replace(/^http(s?):/i, 'ws$1:');
+    }}
+    return new _WS(newUrl, protocols);
+  }};
+
+  // Intercept <a> clicks
+  document.addEventListener('click', function(ev) {{
+    var a = ev.target.closest && ev.target.closest('a[href]');
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href) return;
+
+    if (href.startsWith('http://127.0.0.1:5001') || href.startsWith('https://127.0.0.1:5001')) {{
+      ev.preventDefault();
+      console.warn('Blocked navigation to local node:', href);
+      return;
+    }}
+
+    if (href.startsWith('http://') || href.startsWith('https://')) return;
+
+    if (href.startsWith('/') || !href.startsWith('#')) {{
+      ev.preventDefault();
+      var dest = qualify(href);
+      if (dest) window.location.assign(dest);
+    }}
+  }}, true);
+
+}})();
+</script>";
+        }
+
+
 
     }
 

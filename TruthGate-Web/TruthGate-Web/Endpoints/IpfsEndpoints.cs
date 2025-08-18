@@ -151,7 +151,10 @@ namespace TruthGate_Web.Endpoints
                 var normalizedRest = RequestHelpers.EnsureCidPrefix(rest, fallbackCid);
 
                 var targetUriAuthed = RequestHelpers.CombineTargetHttp("ipfs", normalizedRest, context, 9010);
-                await IpfsGateway.Proxy(context, targetUriAuthed, clientFactory);
+                var rewrite = ShouldRewriteIndex(context, normalizedRest);
+                var ipfsPrefix = ExtractIpfsPrefix(normalizedRest);
+
+                await IpfsGateway.Proxy(context, targetUriAuthed, clientFactory, rewriteIndexForCid: rewrite, basePrefix: ipfsPrefix);
             });
 
             // Preflight for /ipfs/*
@@ -242,7 +245,12 @@ namespace TruthGate_Web.Endpoints
                 var normalizedRest = RequestHelpers.EnsureIpnsPrefix(rest, fallbackIpns);
 
                 var targetUriAuthed = RequestHelpers.CombineTargetHttp("ipns", normalizedRest, context, 9010);
-                await IpfsGateway.Proxy(context, targetUriAuthed, clientFactory);
+
+                var rewrite = ShouldRewriteIndex(context, normalizedRest);
+                var ipnsPrefix = ExtractIpnsPrefix(normalizedRest);
+
+                await IpfsGateway.Proxy(context, targetUriAuthed, clientFactory, rewriteIndexForCid: rewrite, basePrefix: ipnsPrefix);
+
             });
 
             // Preflight for /ipns/*
@@ -257,6 +265,30 @@ namespace TruthGate_Web.Endpoints
 
 
             return app;
+        }
+
+        // Helpers
+        static bool ShouldRewriteIndex(HttpContext ctx, string rest)
+        {
+            if (!RequestHelpers.IsHtmlRequest(ctx.Request)) return false;
+            // Rewrite for index-like requests
+            if (string.IsNullOrWhiteSpace(rest)) return true;
+            if (rest.EndsWith("/", StringComparison.Ordinal)) return true;
+            if (rest.EndsWith("index.html", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        static string? ExtractIpfsPrefix(string normalizedRest)
+        {
+            // normalizedRest expected like: "{cid}/..." or "{cid}" or empty (handled earlier)
+            var seg = normalizedRest.Split('/', 2)[0];
+            return string.IsNullOrWhiteSpace(seg) ? null : $"/ipfs/{seg}/";
+        }
+
+        static string? ExtractIpnsPrefix(string normalizedRest)
+        {
+            var seg = normalizedRest.Split('/', 2)[0];
+            return string.IsNullOrWhiteSpace(seg) ? null : $"/ipns/{seg}/";
         }
 
     }
