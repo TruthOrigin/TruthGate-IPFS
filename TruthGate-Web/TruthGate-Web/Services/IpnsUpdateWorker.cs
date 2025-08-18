@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using TruthGate_Web.Endpoints;
@@ -46,13 +47,12 @@ namespace TruthGate_Web.Services
 
         private const string ManagedRoot = "/production/pinned";
         private const string StagingRoot = "/production/.staging/ipns";
+        private const string TgpMetaFile = ".tgp-meta.json"; // lives in each version folder
 
-        // --- Concurrency + scheduling state ---
-        private readonly SemaphoreSlim _globalSlots; // caps overall concurrency
+        // concurrency
+        private readonly SemaphoreSlim _globalSlots;
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _perKeyLocks = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, DateTimeOffset> _lastScheduledRun = new(StringComparer.OrdinalIgnoreCase);
-
-        // A small guard to avoid two full "RunAll" passes overlapping (manual vs scheduler).
         private readonly SemaphoreSlim _runAllOnce = new(1, 1);
 
         public IpnsUpdateWorker(
@@ -71,31 +71,21 @@ namespace TruthGate_Web.Services
             _opts = opts?.Value ?? new IpnsUpdateOptions();
 
             if (_opts.MaxConcurrency < 1) _opts.MaxConcurrency = 1;
-            _globalSlots = new SemaphoreSlim(_opts.MaxConcurrency, _opts.MaxConcurrency);
             if (_opts.SchedulerInterval <= TimeSpan.Zero) _opts.SchedulerInterval = TimeSpan.FromMinutes(30);
             if (_opts.ScheduledPerKeyCooldown <= TimeSpan.Zero) _opts.ScheduledPerKeyCooldown = TimeSpan.FromMinutes(10);
+
+            _globalSlots = new SemaphoreSlim(_opts.MaxConcurrency, _opts.MaxConcurrency);
         }
 
-        // =========================
-        // Background scheduler loop
-        // =========================
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            // Crash-safe: cleanup orphaned staging at start
-            try { await CleanupStagingAsync(stoppingToken); }
-            catch (Exception ex) { _log.LogWarning(ex, "Staging cleanup failed on startup."); }
+            try { await CleanupStagingAsync(stoppingToken); } catch (Exception ex) { _log.LogWarning(ex, "Staging cleanup failed on startup."); }
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                try
-                {
-                    await RunScheduledPassAsync(stoppingToken);
-                }
+                try { await RunScheduledPassAsync(stoppingToken); }
                 catch (OperationCanceledException) { }
-                catch (Exception ex)
-                {
-                    _log.LogError(ex, "IPNS scheduled pass failed.");
-                }
+                catch (Exception ex) { _log.LogError(ex, "IPNS scheduled pass failed."); }
 
                 try { await Task.Delay(_opts.SchedulerInterval, stoppingToken); }
                 catch (TaskCanceledException) { }
@@ -104,54 +94,38 @@ namespace TruthGate_Web.Services
 
         private async Task RunScheduledPassAsync(CancellationToken ct)
         {
-            // One "RunAll" style pass at a time
             await _runAllOnce.WaitAsync(ct);
             try
             {
                 var cfg = _config.Get();
                 var entries = (cfg.IpnsKeys ?? new List<IpnsKey>()).ToList();
-                if (entries.Count == 0)
-                {
-                    // opportunistic staging cleanup
-                    try { await CleanupStagingAsync(ct); } catch { }
-                    return;
-                }
+                if (entries.Count == 0) { try { await CleanupStagingAsync(ct); } catch { } return; }
 
-                // Build tasks for items that are either AutoUpdate or need policy enforcement.
                 var now = DateTimeOffset.UtcNow;
-
                 var toProcess = new List<IpnsKey>();
+
                 foreach (var e in entries)
                 {
-                    // Always apply retroactive pruning if KeepOld=false
-                    // (We enforce inside the update pipeline as well, but this makes sure "AutoUpdate=false" keys still prune.)
+                    // Always enforce pruning policy even when AutoUpdate is off
                     if (!e.KeepOldCidPinned)
-                        _ = EnsureKeepOldPolicyAsync(e.Name, ct); // fire-and-forget; it takes key lock inside
+                        _ = EnsureKeepOldPolicyAsync(e.Name, ct);
 
                     if (!e.AutoUpdateToPin) continue;
 
-                    // Per-key cooldown for scheduled runs
-                    if (_lastScheduledRun.TryGetValue(e.Name, out var last) &&
-                        now - last < _opts.ScheduledPerKeyCooldown)
+                    if (_lastScheduledRun.TryGetValue(e.Name, out var last)
+                        && now - last < _opts.ScheduledPerKeyCooldown)
                         continue;
 
                     toProcess.Add(e);
                     _lastScheduledRun[e.Name] = now;
                 }
 
-                if (toProcess.Count == 0)
-                {
-                    // opportunistic staging cleanup
-                    try { await CleanupStagingAsync(ct); } catch { }
-                    return;
-                }
+                if (toProcess.Count == 0) { try { await CleanupStagingAsync(ct); } catch { } return; }
 
-                // Launch with bounded parallelism
                 var tasks = toProcess.Select(k => ProcessOneAsync(k.Name, forceResolve: false, ct));
-                await WhenAllBounded(tasks, ct);
+                await Task.WhenAll(tasks);
 
-                // Final: opportunistic staging cleanup
-                try { await CleanupStagingAsync(ct); } catch { /* ignore */ }
+                try { await CleanupStagingAsync(ct); } catch { }
             }
             finally
             {
@@ -159,12 +133,8 @@ namespace TruthGate_Web.Services
             }
         }
 
-        // ==================================================
-        // Public API (manual) — integrates with same pipeline
-        // ==================================================
         public async Task RunOnceForAsync(string name, CancellationToken ct = default)
         {
-            // Manual: ignore cooldown, run now (but still respect concurrency + per-key lock)
             await ProcessOneAsync(name, forceResolve: true, ct);
         }
 
@@ -174,9 +144,9 @@ namespace TruthGate_Web.Services
             try
             {
                 var cfg = _config.Get();
-                var entries = (cfg.IpnsKeys ?? new List<IpnsKey>()).Select(k => k.Name).ToList();
-                var tasks = entries.Select(n => ProcessOneAsync(n, forceResolve: true, ct));
-                await WhenAllBounded(tasks, ct);
+                var names = (cfg.IpnsKeys ?? new List<IpnsKey>()).Select(k => k.Name).ToList();
+                var tasks = names.Select(n => ProcessOneAsync(n, forceResolve: true, ct));
+                await Task.WhenAll(tasks);
 
                 try { await CleanupStagingAsync(ct); } catch { }
             }
@@ -202,12 +172,9 @@ namespace TruthGate_Web.Services
             finally { keyLock.Release(); }
         }
 
-        // ======================
-        // Core per-key operation
-        // ======================
+        // -------- core per-key pipeline (now with TGP) --------
         private async Task ProcessOneAsync(string name, bool forceResolve, CancellationToken ct)
         {
-            // Throttle global concurrency
             await _globalSlots.WaitAsync(ct);
             try
             {
@@ -219,7 +186,6 @@ namespace TruthGate_Web.Services
                     var e = cfg.IpnsKeys?.FirstOrDefault(k => string.Equals(k.Name, name, StringComparison.OrdinalIgnoreCase));
                     if (e is null) return;
 
-                    // If scheduled pass and auto-update is off, just enforce pruning and exit
                     if (!forceResolve && !e.AutoUpdateToPin)
                     {
                         if (!e.KeepOldCidPinned)
@@ -227,59 +193,85 @@ namespace TruthGate_Web.Services
                         return;
                     }
 
-                    // Resolve IPNS
                     var ipnsKey = CanonicalizeIpnsKey(e.Key);
-                    string latestCid;
+
+                    string pointerCid;
                     try
                     {
-                        latestCid = await ResolveIpnsAsync(ipnsKey, ct);
+                        pointerCid = await ResolveIpnsAsync(ipnsKey, ct);
                     }
                     catch (Exception ex)
                     {
                         _log.LogWarning(ex, "IPNS resolve failed for '{Name}'.", e.Name);
-                        // Even on resolve failure, still enforce pruning policy
                         if (!e.KeepOldCidPinned)
                             await RemoveAllButLatestAsync(e.Name, ct);
                         return;
                     }
-
-                    if (string.IsNullOrWhiteSpace(latestCid))
+                    if (string.IsNullOrWhiteSpace(pointerCid))
                     {
                         if (!e.KeepOldCidPinned)
                             await RemoveAllButLatestAsync(e.Name, ct);
                         return;
                     }
 
-                    // Already current?
-                    if (string.Equals(latestCid, e.CurrentCID, StringComparison.OrdinalIgnoreCase))
+                    // Check TGP: see if /tgp.json exists under the pointer root and extract target CID
+                    string? tgpTargetCid = await TryReadTgpTargetCidAsync(pointerCid, ct);
+
+                    // Short-circuit: if pointerCid hasn't changed and either there's no TGP target
+                    // or the target hasn't changed meaningfully for our policy, we may just enforce pruning.
+                    if (string.Equals(pointerCid, e.CurrentCID, StringComparison.OrdinalIgnoreCase))
                     {
                         if (!e.KeepOldCidPinned)
                             await RemoveAllButLatestAsync(e.Name, ct);
+                        // Note: we don't store target CID in config; pruning logic reads sidecar per version.
                         return;
                     }
 
-                    // New version flow
+                    // New version detected
                     var nextVersion = await ComputeNextVersionAsync(e.Name, ct);
-                    var targetFolder = $"{ManagedRoot}/{e.Name}-v{nextVersion:000}";
+                    var versionFolder = $"{ManagedRoot}/{e.Name}-v{nextVersion:000}";
                     var staged = $"{StagingRoot}/{e.Name}/{Guid.NewGuid():N}";
 
-                    // Stage → pin → provide → promote
+                    // Stage → pin (pointer) → provide → promote
                     await EnsureFolderAsync($"{StagingRoot}/{e.Name}", ct);
-                    await FilesCpFromIpfsAsync(latestCid, staged, ct);
-                    await PinAddRecursiveAsync(latestCid, ct);
-                    _ = TryProvideAsync(latestCid, ct); // best-effort
+                    await FilesCpFromIpfsAsync(pointerCid, staged, ct);
+                    await PinAddRecursiveAsync(pointerCid, ct);
+                    _ = TryProvideAsync(pointerCid, ct);
+
+                    // If TGP target exists: pin+provide it too (no extra copy to MFS to avoid space blowup)
+                    if (!string.IsNullOrWhiteSpace(tgpTargetCid))
+                    {
+                        try
+                        {
+                            await PinAddRecursiveAsync(tgpTargetCid!, ct);
+                            _ = TryProvideAsync(tgpTargetCid!, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogWarning(ex, "Pin/provide of TGP target CID failed for '{Name}'. Target={TargetCid}", e.Name, tgpTargetCid);
+                        }
+                    }
 
                     await EnsureFolderAsync(ManagedRoot, ct);
-                    await FilesMvAsync(staged, targetFolder, ct);
+                    await FilesMvAsync(staged, versionFolder, ct);
 
-                    // Update CurrentCID in config
+                    // Write TGP sidecar so pruning knows which extra CIDs to unpin later
+                    var meta = new TgpMeta
+                    {
+                        Kind = "tgp-meta",
+                        PointerCid = pointerCid,
+                        TargetCid = tgpTargetCid
+                    };
+                    await FilesWriteTextAsync($"{versionFolder}/{TgpMetaFile}", JsonSerializer.Serialize(meta), ct);
+
+                    // Update config with the *pointer* as CurrentCID (UI already expects this)
                     await _config.UpdateAsync(config =>
                     {
                         var t = config.IpnsKeys?.FirstOrDefault(k => string.Equals(k.Name, e.Name, StringComparison.OrdinalIgnoreCase));
-                        if (t is not null) t.CurrentCID = latestCid;
+                        if (t is not null) t.CurrentCID = pointerCid;
                     });
 
-                    // Retroactive cleanup if KeepOld=false
+                    // Retroactive cleanup if desired
                     if (!e.KeepOldCidPinned)
                         await RemoveAllButLatestAsync(e.Name, ct);
                 }
@@ -291,9 +283,58 @@ namespace TruthGate_Web.Services
         private SemaphoreSlim GetKeyLock(string name)
             => _perKeyLocks.GetOrAdd(name ?? string.Empty, _ => new SemaphoreSlim(1, 1));
 
-        // =====================
-        // Internal helper bits
-        // =====================
+        // ---------- TGP helpers ----------
+        private sealed class TgpMeta
+        {
+            public string Kind { get; set; } = "tgp-meta";
+            public string? PointerCid { get; set; }
+            public string? TargetCid { get; set; }
+        }
+
+        private async Task<string?> TryReadTgpTargetCidAsync(string pointerCid, CancellationToken ct)
+        {
+            try
+            {
+                // Try to read /tgp.json out of the pointer root
+                var tgpJson = await CatIpfsTextAsync($"{pointerCid}/tgp.json", ct);
+                if (string.IsNullOrWhiteSpace(tgpJson)) return null;
+
+                using var doc = JsonDocument.Parse(tgpJson);
+                var root = doc.RootElement;
+
+                // v1 requires tgp:1 and current
+                if (!root.TryGetProperty("tgp", out var tgpVal) || tgpVal.ValueKind != JsonValueKind.Number || tgpVal.GetInt32() != 1)
+                    return null;
+                if (!root.TryGetProperty("current", out var cur) || cur.ValueKind != JsonValueKind.String)
+                    return null;
+
+                var s = cur.GetString() ?? "";
+                if (string.IsNullOrWhiteSpace(s)) return null;
+
+                // Normalize to bare CID
+                if (s.StartsWith("/ipfs/", StringComparison.Ordinal))
+                    s = s.Substring(6);
+                return s;
+            }
+            catch
+            {
+                return null; // treat as non-TGP if anything fails
+            }
+        }
+
+        private async Task<string?> CatIpfsTextAsync(string pathOrCidRelative, CancellationToken ct)
+        {
+            // Support both "<cid>/tgp.json" and "/ipfs/<cid>/tgp.json" shapes; always call /api/v0/cat with /ipfs/
+            var p = pathOrCidRelative;
+            if (!p.StartsWith("/ipfs/", StringComparison.Ordinal))
+                p = "/ipfs/" + p.TrimStart('/');
+            var rest = $"/api/v0/cat?arg={Uri.EscapeDataString(p)}";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
+            if (!res.IsSuccessStatusCode) return null;
+            return await res.Content.ReadAsStringAsync(ct);
+        }
+
+        // ---------- IPFS/MFS helpers ----------
         private static string CanonicalizeIpnsKey(string key)
         {
             var s = (key ?? "").Trim();
@@ -312,7 +353,6 @@ namespace TruthGate_Web.Services
             var path = el?.GetProperty("Path").GetString();
             if (string.IsNullOrWhiteSpace(path) || !path.StartsWith("/ipfs/", StringComparison.Ordinal))
                 throw new InvalidOperationException("IPNS resolution did not return /ipfs/<cid>.");
-
             return path.Substring("/ipfs/".Length);
         }
 
@@ -339,6 +379,23 @@ namespace TruthGate_Web.Services
             using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
             if (!res.IsSuccessStatusCode)
                 throw new InvalidOperationException($"files/mv failed '{from}' → '{to}' ({(int)res.StatusCode})");
+        }
+
+        private async Task FilesWriteTextAsync(string path, string content, CancellationToken ct)
+        {
+            // /api/v0/files/write?arg=<path>&create=true&parents=true&truncate=true
+            var rest = $"/api/v0/files/write?arg={Uri.EscapeDataString(path)}&create=true&parents=true&truncate=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
+            if (!res.IsSuccessStatusCode)
+                throw new InvalidOperationException($"files/write failed '{path}' ({(int)res.StatusCode})");
+        }
+
+        private async Task<string?> FilesReadAllTextAsync(string path, CancellationToken ct)
+        {
+            var rest = $"/api/v0/files/read?arg={Uri.EscapeDataString(path)}";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
+            if (!res.IsSuccessStatusCode) return null;
+            return await res.Content.ReadAsStringAsync(ct);
         }
 
         private async Task EnsureFolderAsync(string mfsPath, CancellationToken ct)
@@ -412,8 +469,28 @@ namespace TruthGate_Web.Services
             {
                 try
                 {
+                    // Read sidecar to learn any extra CIDs (TGP target) to unpin
+                    string? metaJson = await FilesReadAllTextAsync($"{v.path}/{TgpMetaFile}", ct);
+                    string? tgpTarget = null;
+                    if (!string.IsNullOrWhiteSpace(metaJson))
+                    {
+                        try
+                        {
+                            var m = JsonSerializer.Deserialize<TgpMeta>(metaJson);
+                            if (m?.TargetCid is string s && !string.IsNullOrWhiteSpace(s))
+                                tgpTarget = s.Trim();
+                        }
+                        catch { /* ignore */ }
+                    }
+
+                    // Remove folder then unpin both pointer and (if present) target
                     await FilesRmRecursiveAsync(v.path, ct);
                     await PinRmRecursiveAsync(v.cid, ct);
+                    if (!string.IsNullOrWhiteSpace(tgpTarget))
+                    {
+                        try { await PinRmRecursiveAsync(tgpTarget!, ct); }
+                        catch (Exception ex) { _log.LogWarning(ex, "Failed to unpin TGP target for {Name}-v{Version}", name, v.n); }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -424,7 +501,6 @@ namespace TruthGate_Web.Services
 
         private async Task CleanupStagingAsync(CancellationToken ct)
         {
-            // Wipe and recreate staging; safe because we only ever put transient data here.
             try { await FilesRmRecursiveAsync(StagingRoot, ct); } catch { }
             try { await EnsureFolderAsync(StagingRoot, ct); } catch { }
         }
@@ -457,18 +533,10 @@ namespace TruthGate_Web.Services
         {
             try
             {
-                // Not all Kubo builds expose routing/provide; ignore failures.
                 var rest = $"/api/v0/routing/provide?arg={Uri.EscapeDataString(cid)}";
                 using var _ = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
             }
             catch { /* ignore */ }
-        }
-
-        // Bounded concurrency helper (awaits all while honoring _globalSlots inside each ProcessOneAsync)
-        private static async Task WhenAllBounded(IEnumerable<Task> tasks, CancellationToken ct)
-        {
-            // Just await them all; each ProcessOneAsync grabs/releases _globalSlots.
-            await Task.WhenAll(tasks);
         }
     }
 }
