@@ -1,0 +1,80 @@
+﻿@using Microsoft.AspNetCore.Components.Forms
+@using System.Net.Http.Headers
+@inject IHttpClientFactory HttpFactory
+@inject ISnackbar Snackbar
+@inject IApiKeyProvider Keys
+@inject NavigationManager Nav
+
+<MudDialog>
+    <DialogContent>
+        <MudTextField Label="Passphrase"
+                      @bind-Value="_pass"
+                      InputType="InputType.Password"
+                      Immediate="true"
+                      Required="true" />
+
+        <MudFileUpload T="IReadOnlyList<IBrowserFile>" FilesChanged="OnFileChanged" MaxItems="1">
+            <ActivatorContent>
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.VpnKey">
+                    Select Backup (.tgbackup)
+                </MudButton>
+            </ActivatorContent>
+        </MudFileUpload>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Submit"
+                   Color="Color.Primary"
+                   Variant="Variant.Filled"
+                   Disabled="@(_file is null || string.IsNullOrWhiteSpace(_pass))">
+            Import
+        </MudButton>
+        <MudButton OnClick="()=>MudDialog.Cancel()">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private IBrowserFile? _file;
+    private string? _pass;
+
+    private void OnFileChanged(IReadOnlyList<IBrowserFile> picked)
+        => _file = picked.FirstOrDefault();
+
+    private async Task Submit()
+    {
+        if (_file is null || string.IsNullOrWhiteSpace(_pass)) return;
+
+        var client = HttpFactory.CreateClient();
+        using var form = new MultipartFormDataContent();
+
+        var stream = _file.OpenReadStream(long.MaxValue); // don't dispose before send
+        var part = new StreamContent(stream);
+        part.Headers.ContentType = new MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(_file.ContentType) ? "application/octet-stream" : _file.ContentType);
+
+        form.Add(part, "file", _file.Name);
+
+        // build absolute URL from the app’s base URI
+        var rel = $"/api/truthgate/v1/admin/import?passphrase={Uri.EscapeDataString(_pass)}";
+        var abs = new Uri(new Uri(Nav.BaseUri), rel);
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, abs) { Content = form };
+        req.Headers.Add("X-API-Key", Keys.GetCurrentKey()); // internal rotating key
+
+        var res = await client.SendAsync(req);
+
+        if (res.IsSuccessStatusCode)
+        {
+            Snackbar.Add("Imported.", Severity.Success);
+            MudDialog.Close();
+        }
+        else
+        {
+            Snackbar.Add($"Import failed: {(int)res.StatusCode}", Severity.Error);
+        }
+    }
+}

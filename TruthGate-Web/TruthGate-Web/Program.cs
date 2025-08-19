@@ -13,6 +13,7 @@ using Blazored.LocalStorage;
 using TruthGate_Web.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
+using TruthGate_Web.Models;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -41,6 +42,8 @@ builder.Services.AddServerSideBlazor()
 builder.Services.AddSingleton<IConfigService, ConfigService>();
 builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<IConfigService>());
 
+builder.Services.AddScoped<AdminApiKeyOnlyFilter>();
+
 builder.Services.Configure<IpnsUpdateOptions>(o =>
 {
     o.MaxConcurrency = 4;                          // tune as you like
@@ -49,6 +52,11 @@ builder.Services.Configure<IpnsUpdateOptions>(o =>
 
 builder.Services.AddSingleton<IIpnsUpdateService, IpnsUpdateWorker>();
 builder.Services.AddHostedService(sp => (IpnsUpdateWorker)sp.GetRequiredService<IIpnsUpdateService>());
+
+
+builder.Services.AddSingleton<IPublishQueue, PublishQueue>();
+builder.Services.AddHostedService(sp => (PublishQueue)sp.GetRequiredService<IPublishQueue>());
+
 
 builder.Services.AddMudServices();
 builder.Services.AddBlazoredLocalStorage();

@@ -45,9 +45,23 @@
 
     public class EdgeDomain
     {
-        public string Domain { get; set; }
-        public string UseSSL { get; set; }
+        public string Domain { get; set; } = "";
+        public string UseSSL { get; set; } = "false";
         public string? RedirectUrl { get; set; }
+
+        // NEW: site/TGP wiring
+        public string SiteFolderLeaf { get; set; } = "";         // e.g., "example.com"
+        public string TgpFolderLeaf { get; set; } = "";          // e.g., "tgp-example-com"
+        public string IpnsKeyName { get; set; } = "";            // key name in node keystore
+        public string IpnsPeerId { get; set; } = "";             // returned from key/gen or import
+        public string? LastPublishedCid { get; set; }
+        public DateTimeOffset? LastPublishedAt { get; set; }
+
+        // NEW: encrypted private key (for backup/import)
+        // We store an armored/exported key protected by a user passphrase.
+        public int? IpnsKeyEncVersion { get; set; }              // 1 = AES-GCM + scrypt
+        public string? IpnsKeySaltB64 { get; set; }              // per-domain random salt
+        public string? IpnsKeyCipherB64 { get; set; }            // sealed secret
     }
 
     public class ApiKey

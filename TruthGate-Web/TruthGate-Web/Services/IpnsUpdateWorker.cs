@@ -381,15 +381,7 @@ namespace TruthGate_Web.Services
                 throw new InvalidOperationException($"files/mv failed '{from}' → '{to}' ({(int)res.StatusCode})");
         }
 
-        private async Task FilesWriteTextAsync(string path, string content, CancellationToken ct)
-        {
-            // /api/v0/files/write?arg=<path>&create=true&parents=true&truncate=true
-            var rest = $"/api/v0/files/write?arg={Uri.EscapeDataString(path)}&create=true&parents=true&truncate=true";
-            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
-            if (!res.IsSuccessStatusCode)
-                throw new InvalidOperationException($"files/write failed '{path}' ({(int)res.StatusCode})");
-        }
-
+ 
         private async Task<string?> FilesReadAllTextAsync(string path, CancellationToken ct)
         {
             var rest = $"/api/v0/files/read?arg={Uri.EscapeDataString(path)}";
@@ -449,7 +441,21 @@ namespace TruthGate_Web.Services
             }
             return max + 1;
         }
+        private async Task FilesWriteTextAsync(string mfsPath, string text, CancellationToken ct)
+        {
+            // /api/v0/files/write?arg=<path>&create=true&parents=true&truncate=true
+            var path = IpfsGateway.NormalizeMfs(mfsPath);
+            var rest = $"/api/v0/files/write?arg={Uri.EscapeDataString(path)}&create=true&parents=true&truncate=true";
 
+            // For text you can use text/plain; IPFS doesn't care, but it's nicer.
+            using var content = new StringContent(text, Encoding.UTF8, "text/plain");
+
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(
+                rest, _http, _keys, content: content, method: "POST", ct: ct);
+
+            if (!res.IsSuccessStatusCode)
+                throw new InvalidOperationException($"files/write failed '{path}' ({(int)res.StatusCode})");
+        }
         private async Task RemoveAllButLatestAsync(string name, CancellationToken ct)
         {
             var children = await ListMfsChildrenAsync(ManagedRoot, ct);

@@ -1,0 +1,83 @@
+﻿@using MudBlazor
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(Message))
+        {
+            <MudText Typo="Typo.body1" Class="mb-2">@Message</MudText>
+        }
+
+        <MudForm @ref="_form" Validation="Validate">
+            <MudTextField @bind-Value="_value"
+                          Label="@Label"
+                          Placeholder="@Placeholder"
+                          InputType="@(IsPassword ? InputType.Password : InputType.Text)"
+                          Immediate="true"
+                          Required="@Required"
+                          Lines="@(Multiline ? 3 : 1)"
+                          @onkeydown="@OnKeyDown" />
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudText Color="Color.Error" Class="mt-1">@_error</MudText>
+            }
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="Submit" Color="Color.Primary" Variant="Variant.Filled"
+                   Disabled="@(Required && string.IsNullOrWhiteSpace(_value))">
+            OK
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+
+    // Shown text above the input (this is what your PromptAsync passes in)
+    [Parameter] public string? Message { get; set; }
+
+    // Optional quality-of-life knobs (all optional)
+    [Parameter] public string Label { get; set; } = "Value";
+    [Parameter] public string? Placeholder { get; set; }
+    [Parameter] public string? InitialValue { get; set; }
+    [Parameter] public bool Required { get; set; } = true;
+    [Parameter] public bool IsPassword { get; set; } = false;
+    [Parameter] public bool Multiline { get; set; } = false;
+
+    private MudForm _form = default!;
+    private string _value = "";
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _value = InitialValue ?? "";
+    }
+
+    private IEnumerable<string> Validate()
+    {
+        _error = null;
+        if (Required && string.IsNullOrWhiteSpace(_value))
+        {
+            _error = "Please enter a value.";
+            yield return _error;
+        }
+    }
+
+    private async Task Submit()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+        MudDialog.Close(DialogResult.Ok(_value));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    // Press Enter to submit
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !Multiline)
+            await Submit();
+    }
+}

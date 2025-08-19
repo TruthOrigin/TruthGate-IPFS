@@ -8,53 +8,86 @@
 @inject IDialogService Dialogs
 @inject ISnackbar Snackbar
 @rendermode InteractiveServer
+@inject IJSRuntime JS
 
 
 <MudContainer Class="py-3" MaxWidth="MudBlazor.MaxWidth.Medium">
     <div class="flex items-center justify-between mb-4">
         <MudText Typo="Typo.h3">Domains</MudText>
         <br />
-        <MudButton Variant="Variant.Filled"
-                   Color="Color.Primary"
-                   StartIcon="@Icons.Material.Filled.DomainAdd"
-                   OnClick="AddDomain">
-            Add Domain
-        </MudButton>
+
+        <MudStack Spacing="2" Row="true">
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.DomainAdd"
+                       OnClick="AddDomain">
+                Add Domain
+            </MudButton>
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Secondary"
+                       StartIcon="@Icons.Material.Filled.UploadFile"
+                       OnClick="ImportDomain">Import Domain</MudButton>
+        </MudStack>
     </div>
 
     <MudTable Items="_domains" Dense="true" Hover="true" Bordered="true">
         <HeaderContent>
             <MudTh>Domain</MudTh>
-            <MudTh>Use SSL</MudTh>
-            <MudTh>Redirect</MudTh>
+            <MudTh>Flags</MudTh>
             <MudTh>Actions</MudTh>
         </HeaderContent>
 
         <RowTemplate>
-            <MudTd DataLabel="Domain">@context.Domain</MudTd>
+            <MudTd DataLabel="Domain">
+                @context.Domain
+                @if (!string.IsNullOrWhiteSpace(context.RedirectUrl))
+                {
+                    <MudText Typo="Typo.caption" Class="truncate-text" Title="@context.RedirectUrl">
+                        @{
+                            var u = context.RedirectUrl ?? string.Empty;
+                        }
+                        @(u.Length > 25 ? $"{u.Substring(0, 23)}..." : u)
+                    </MudText>
+
+                }
+            </MudTd>
             <MudTd DataLabel="Use SSL">
                 @if (ToBool(context.UseSSL))
                 {
-                    <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Lock">Enabled</MudChip>
+                    <MudChip T="string" Color="Color.Primary" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Lock">SSL Enabled</MudChip>
                 }
                 else
                 {
-                    <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.LockOpen">Disabled</MudChip>
+                    <MudChip T="string" Color="Color.Default" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.LockOpen">SSL Disabled</MudChip>
                 }
-            </MudTd>
-            <MudTd DataLabel="Redirect">
-                @if (string.IsNullOrWhiteSpace(context.RedirectUrl))
+
+                @if (!string.IsNullOrWhiteSpace(context.IpnsPeerId))
                 {
-                    <MudIcon Icon="@Icons.Material.Filled.Cancel" Color="Color.Error" />
+                    <MudStack Row="true" Spacing="1" Class="mb-2">
+                     @*    <MudChip T="string" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.VpnKey">
+                            @context.IpnsKeyName
+                        </MudChip> *@
+                        <MudTooltip Text="@context.IpnsPeerId">
+                            <MudChip T="string" Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Fingerprint">
+                                IPNS: @Short(context.IpnsPeerId)
+                            </MudChip>
+                        </MudTooltip>
+                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small"
+                                       OnClick="@(() => CopyToClipboard(context.IpnsPeerId))" />
+                    </MudStack>
                 }
-                else
-                {
-                    <MudText Typo="Typo.caption" Class="truncate-text">
-                        @context.RedirectUrl
-                    </MudText>
-                }
-            </MudTd>
+
+            </MudTd>         
             <MudTd>
+                @if (string.IsNullOrWhiteSpace(context.RedirectUrl))
+                { 
+                   
+                    <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.CloudUpload"
+                           OnClick="@(() => PublishDomain(context))">Publish</MudButton>
+                <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined"  StartIcon="@Icons.Material.Filled.Download"
+                            OnClick="@(() => BackupDomain(context))">Backup</MudButton>
+                }
                 <MudButton Size="Size.Small"
                            Variant="Variant.Outlined"
                            StartIcon="@Icons.Material.Filled.Edit"
@@ -62,7 +95,6 @@
                            OnClick="@(() => EditDomain(context))">
                     Edit
                 </MudButton>
-
                 <MudButton Size="Size.Small"
                            Variant="Variant.Outlined"
                            Color="Color.Error"
@@ -83,6 +115,65 @@
 {
     private List<EdgeDomain> _domains = new();
 
+    private async Task PublishDomain(EdgeDomain d)
+    {
+        var parms = new DialogParameters<PublishDialog> { { x => x.Domain, d.Domain } };
+        var dlg = Dialogs.Show<PublishDialog>($"Publish: {d.Domain}", parms,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Large, CloseButton = true });
+
+        await dlg.Result;
+
+        // Reload once
+        LoadFromConfig();
+
+        // Optional: light polling for a short window so the key appears once the queue finishes
+        _ = Task.Run(async () =>
+        {
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < until)
+            {
+                await InvokeAsync(LoadFromConfig);
+                if (_domains.Any(x => x.Domain.Equals(d.Domain, StringComparison.OrdinalIgnoreCase)
+                                      && !string.IsNullOrWhiteSpace(x.IpnsPeerId)))
+                    break;
+
+                await Task.Delay(1500);
+            }
+        });
+    }
+
+    private static string Short(string s)
+    => string.IsNullOrWhiteSpace(s) ? "—" : (s.Length <= 7 ? s : $"{s[..3]}…{s[^2..]}");
+
+
+    private async Task CopyToClipboard(string s)
+        => await JS.InvokeVoidAsync("navigator.clipboard.writeText", s);
+    private async Task BackupDomain(EdgeDomain d)
+    {
+        var pass = await PromptAsync("Backup passphrase", "Enter a passphrase to encrypt your IPNS key export.");
+        if (string.IsNullOrWhiteSpace(pass)) return;
+
+        var url = $"/api/domains/{Uri.EscapeDataString(d.Domain)}/backup?passphrase={Uri.EscapeDataString(pass)}";
+        await JS.InvokeVoidAsync("open", url, "_blank"); // save-as
+    }
+
+    private async Task ImportDomain()
+    {
+        var parms = new DialogParameters<ImportDomainDialog>();
+        var dlg = Dialogs.Show<ImportDomainDialog>("Import Domain Backup", parms,
+            new DialogOptions { FullWidth = true, MaxWidth = MaxWidth.Medium, CloseButton = true });
+        await dlg.Result;
+    }
+
+    private async Task<string?> PromptAsync(string title, string message)
+    {
+        var p = new DialogParameters<SimplePromptDialog> { { x => x.Message, message } };
+        var dlg = Dialogs.Show<SimplePromptDialog>(title, p);
+        var res = await dlg.Result;
+        return res.Canceled ? null : (res.Data as string);
+    }
+
+
     protected override void OnInitialized()
     {
         LoadFromConfig();
@@ -92,16 +183,20 @@
     {
         var cfg = ConfigSvc.Get();
 
-        // Create a local copy and sort by domain
         _domains = (cfg.Domains ?? new List<EdgeDomain>())
             .Where(d => !string.IsNullOrWhiteSpace(d?.Domain))
             .OrderBy(d => d.Domain, StringComparer.OrdinalIgnoreCase)
             .Select(d => new EdgeDomain
-            {
-                Domain = (d.Domain ?? string.Empty).Trim(),
-                UseSSL = (d.UseSSL ?? string.Empty).Trim(),
-                RedirectUrl = (d.RedirectUrl ?? string.Empty).Trim(),
-            })
+                {
+                    Domain = (d.Domain ?? string.Empty).Trim(),
+                    UseSSL = (d.UseSSL ?? string.Empty).Trim(),
+                    RedirectUrl = (d.RedirectUrl ?? string.Empty).Trim(),
+                // 👇 preserve the IPNS-related fields (and a couple of useful ones)
+                    IpnsKeyName = d.IpnsKeyName?.Trim(),
+                    IpnsPeerId = d.IpnsPeerId?.Trim(),
+                    LastPublishedCid = d.LastPublishedCid?.Trim(),
+                    LastPublishedAt = d.LastPublishedAt
+                })
             .ToList();
 
         StateHasChanged();
@@ -133,11 +228,11 @@
         {
             cfg.Domains ??= new List<EdgeDomain>();
             cfg.Domains.Add(new EdgeDomain
-            {
-                Domain = normalized,
-                UseSSL = r.UseSSL ? "true" : "false",
-                RedirectUrl = r.RedirectUrl?.Trim(),
-            });
+                {
+                    Domain = normalized,
+                    UseSSL = r.UseSSL ? "true" : "false",
+                    RedirectUrl = r.RedirectUrl?.Trim(),
+                });
         });
 
         Snackbar.Add($"Domain '{normalized}' added.", Severity.Success);

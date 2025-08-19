@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 using System.Net;
 using System.Net.Http;
 using TruthGate_Web.Models;
@@ -13,40 +14,84 @@ namespace TruthGate_Web.Endpoints
         /// Calls your existing IpfsGateway.Proxy just like the HTTP endpoint would,
         /// but entirely in-process, returning an HttpResponseMessage.
         /// </summary>
+        /// <summary>
+        /// Sends an IPFS API request through the in-process proxy.
+        /// - rest: e.g. "/api/v0/key/import?arg=myKey"
+        /// - content: optional HttpContent (MultipartFormDataContent, StringContent, etc.)
+        /// - method: defaults to POST (most IPFS endpoints accept POST)
+        /// - extraHeaders: optional additional request headers
+        /// </summary>
         public static async Task<HttpResponseMessage> SendProxyApiRequest(
-        string rest,
-        IHttpClientFactory clientFactory, IApiKeyProvider keys)
+            string rest,
+            IHttpClientFactory clientFactory,
+            IApiKeyProvider keys,
+            HttpContent? content = null,
+            string? method = null,
+            IDictionary<string, string>? extraHeaders = null,
+            CancellationToken ct = default)
         {
-            // fake up an HttpContext the proxy can use
+            // ---- Prepare a fake HttpContext the proxy can read from ----
             var context = new DefaultHttpContext();
 
-            // make sure there’s at least a valid method/scheme so downstream doesn’t choke
-            context.Request.Method = "POST";     // ipfs endpoints usually accept POST
-            context.Request.Scheme = "http";     // adjust if your RequestHelpers cares
-                                                 // context.Request.Host = ... only if your RequestHelpers actually reads it
+            // Method: default POST (IPFS API typically uses POST), but caller may override
+            var httpMethod = method ?? "POST";
+            context.Request.Method = httpMethod;
+            context.Request.Scheme = "http"; // adjust if your RequestHelpers cares about scheme
 
+            // Auth header your proxy expects
             context.Request.Headers["X-API-Key"] = keys.GetCurrentKey();
 
-            // capture response into memory
+            // Additional caller-provided headers
+            if (extraHeaders is not null)
+            {
+                foreach (var (k, v) in extraHeaders)
+                    context.Request.Headers[k] = new StringValues(v);
+            }
+
+            // If we were given HttpContent and the method allows a body, copy it into Request.Body
+            if (content is not null && !HttpMethods.IsGet(httpMethod) && !HttpMethods.IsHead(httpMethod))
+            {
+                // Copy the content bytes into the ASP.NET Request body
+                var reqBuffer = new MemoryStream();
+                await content.CopyToAsync(reqBuffer, ct);
+                reqBuffer.Position = 0;
+                context.Request.Body = reqBuffer;
+                context.Request.ContentLength = reqBuffer.Length;
+
+                // Hoist content headers (esp. Content-Type with boundary for multipart)
+                foreach (var h in content.Headers)
+                {
+                    // "Content-Length" is handled by ContentLength above
+                    if (h.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
+                    context.Request.Headers[h.Key] = new StringValues(h.Value.ToArray());
+                }
+
+                // Some frameworks look at this property too
+                if (content.Headers.ContentType is not null)
+                    context.Request.ContentType = content.Headers.ContentType.ToString();
+            }
+
+            // ---- Run your existing proxy ----
             var bodyStream = new MemoryStream();
             context.Response.Body = bodyStream;
 
-            // run your existing proxy
-            
             var restNormalized = rest.TrimStart('/');
             if (restNormalized.StartsWith("api/", StringComparison.OrdinalIgnoreCase))
                 restNormalized = restNormalized.Substring(4);
 
             var targetUri = RequestHelpers.CombineTarget("api", restNormalized, context);
+
+            // Your proxy copies request headers to the outgoing HttpRequestMessage and forwards the body stream.
             await IpfsGateway.Proxy(context, targetUri, clientFactory);
 
-            // convert HttpContext.Response into HttpResponseMessage
+            // ---- Convert HttpContext.Response → HttpResponseMessage ----
             bodyStream.Position = 0;
             var response = new HttpResponseMessage((HttpStatusCode)context.Response.StatusCode)
             {
                 Content = new StreamContent(new MemoryStream(bodyStream.ToArray()))
             };
 
+            // Copy response headers (proxy already scrubbed hop-by-hop)
             foreach (var kv in context.Response.Headers)
             {
                 if (!response.Headers.TryAddWithoutValidation(kv.Key, kv.Value.ToArray()))
