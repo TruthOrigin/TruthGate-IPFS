@@ -77,19 +77,16 @@ namespace TruthGate_Web.Configuration
             var (baseHost, enabled) = GetIpnsWildcardBase();
             if (!enabled || baseHost is null) return false;
 
-            // Must be exactly base or subdomain of base
             if (!(host == baseHost || host.EndsWith("." + baseHost, StringComparison.OrdinalIgnoreCase)))
                 return false;
 
-            // No apex auto-issue (must have a left label)
             var left = LeftLabel(host);
             if (left is null) return false;
 
-            // Only if mapped to an SSL-enabled domain we trust
             var cfg = _config.Get();
             var authorized = cfg.Domains
                 .Where(d => bool.TryParse(d.UseSSL, out var ok) && ok)
-                .Select(d => new { d.IpnsPeerId, d.IpnsKeyName, d.LastPublishedCid });
+                .Select(d => new { d.IpnsPeerId, d.IpnsKeyName });
 
             foreach (var a in authorized)
             {
@@ -100,15 +97,11 @@ namespace TruthGate_Web.Configuration
                 if (!string.IsNullOrWhiteSpace(a.IpnsKeyName) &&
                     string.Equals(left, a.IpnsKeyName.Trim(), StringComparison.OrdinalIgnoreCase))
                     return true;
-
-                // Optional: allow CID-based subdomains
-                if (!string.IsNullOrWhiteSpace(a.LastPublishedCid) &&
-                    string.Equals(left, a.LastPublishedCid.Trim(), StringComparison.OrdinalIgnoreCase))
-                    return true;
             }
 
             return false;
         }
+
 
         /// <summary>
         /// Main decision including star-ish ipns hosts.
@@ -177,6 +170,10 @@ namespace TruthGate_Web.Configuration
 
         public bool TryQueueIssueIfMissing(string exactHostKey)
         {
+            var decision = DecideForHostIncludingStarish(exactHostKey);
+            if (decision.Kind != SslDecisionKind.RealIfPresent)
+                return false;
+
             var key = (exactHostKey ?? "").Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(key)) return false;
 
@@ -300,10 +297,9 @@ namespace TruthGate_Web.Configuration
             {
                 var ids = new[]
                 {
-                    d.IpnsPeerId?.Trim(),
-                    d.IpnsKeyName?.Trim(),
-                    d.LastPublishedCid?.Trim() // optional
-                }
+            d.IpnsPeerId?.Trim(),
+            d.IpnsKeyName?.Trim()
+        }
                 .Where(s => !string.IsNullOrWhiteSpace(s))
                 .Distinct(StringComparer.OrdinalIgnoreCase);
 
@@ -311,5 +307,6 @@ namespace TruthGate_Web.Configuration
                     yield return $"{left!.ToLowerInvariant()}.{baseHost}";
             }
         }
+
     }
 }

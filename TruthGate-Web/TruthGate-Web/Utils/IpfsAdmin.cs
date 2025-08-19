@@ -1,5 +1,7 @@
-﻿using System.Net;
+﻿using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using TruthGate_Web.Endpoints;
 using TruthGate_Web.Services;
@@ -177,18 +179,103 @@ namespace TruthGate_Web.Utils
 
 
         public static async Task<(string Name, string Id)> KeyImportArmoredAsync(
-            string keyName, string password, string armored, IHttpClientFactory http, IApiKeyProvider keys)
+    string keyName, string password, string armored,
+    IHttpClientFactory http, IApiKeyProvider keys,
+    string? ipfsPath = null, string ipfsExe = "ipfs",
+    CancellationToken ct = default)
         {
-            // multipart: key=<file>, arg=<newName>, password=...
-            var content = new MultipartFormDataContent();
-            content.Add(new StringContent(armored), "key"); // many nodes also accept file; this form works in practice
-            var rest = $"/api/v0/key/import?arg={Uri.EscapeDataString(keyName)}&password={Uri.EscapeDataString(password)}";
-            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, content);
-            res.EnsureSuccessStatusCode();
-            var js = await res.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(js);
-            return (doc.RootElement.GetProperty("Name").GetString()!, doc.RootElement.GetProperty("Id").GetString()!);
+            // --- 1) Try RPC with correct format and multipart ---
+            var rest = $"/api/v0/key/import?arg={Uri.EscapeDataString(keyName)}" +
+                       $"&password={Uri.EscapeDataString(password)}" +
+                       $"&format=pem-pkcs8-cleartext";
+
+            using (var content = new MultipartFormDataContent())
+            {
+                // send as a file part with a filename; many servers care
+                var bytes = Encoding.UTF8.GetBytes(armored);
+                var file = new ByteArrayContent(bytes);
+                file.Headers.ContentType = new MediaTypeHeaderValue("application/x-pem-file");
+                content.Add(file, "key", "key.pem"); // field name 'key' matches Kubo’s expectation
+
+                using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, content);
+                if (res.IsSuccessStatusCode)
+                {
+                    var js = await res.Content.ReadAsStringAsync(ct);
+                    using var doc = JsonDocument.Parse(js);
+                    return (doc.RootElement.GetProperty("Name").GetString()!,
+                            doc.RootElement.GetProperty("Id").GetString()!);
+                }
+
+                // If endpoint isn’t there, or clearly not supported, fall back to CLI.
+                // Surface other errors (bad password, malformed PEM, etc.) unless you prefer to always fall back.
+                if (res.StatusCode != HttpStatusCode.NotFound)
+                {
+                    var body = await res.Content.ReadAsStringAsync(ct);
+                    // A common failure is "failed to decode private key" when format is wrong — we set it above.
+                    throw new InvalidOperationException($"key/import failed: {(int)res.StatusCode} {body}");
+                }
+            }
+
+            // --- 2) Fallback: CLI `ipfs key import -f pem-pkcs8-cleartext <name> <file>` ---
+            var tmp = Path.Combine(Path.GetTempPath(), $"tg-key-{Guid.NewGuid():N}.pem");
+            try
+            {
+                await File.WriteAllTextAsync(tmp, armored, ct);
+
+                var args = $"key import {EscapeArg(keyName)} -f pem-pkcs8-cleartext {EscapeArg(tmp)}";
+                var psi = new ProcessStartInfo(ipfsExe, args)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                if (!string.IsNullOrWhiteSpace(ipfsPath))
+                    psi.Environment["IPFS_PATH"] = ipfsPath;
+
+                using var p = Process.Start(psi)!;
+                var stderr = await p.StandardError.ReadToEndAsync();
+                var stdout = await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync(ct);
+
+                if (p.ExitCode != 0)
+                    throw new InvalidOperationException($"ipfs key import failed (exit {p.ExitCode}): {stderr}\n{stdout}");
+
+                // CLI doesn’t echo JSON; resolve imported key’s peer ID:
+                // `ipfs key list -l` prints "<peerId> <name>"
+                var whoArgs = "key list -l";
+                var who = new ProcessStartInfo(ipfsExe, whoArgs)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                if (!string.IsNullOrWhiteSpace(ipfsPath))
+                    who.Environment["IPFS_PATH"] = ipfsPath;
+
+                using var p2 = Process.Start(who)!;
+                var out2 = await p2.StandardOutput.ReadToEndAsync();
+                await p2.WaitForExitAsync(ct);
+
+                // Find the line with our key name
+                var line = out2.Split('\n')
+                               .FirstOrDefault(l => l.TrimEnd()
+                                                     .EndsWith($" {keyName}", StringComparison.Ordinal));
+                var id = line?.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
+                         ?? throw new InvalidOperationException("Imported key, but could not resolve PeerId.");
+                return (keyName, id);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+
+            static string EscapeArg(string s)
+                => s.Any(ch => char.IsWhiteSpace(ch) || ch is '"' or '\'')
+                   ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
         }
+
         public static async Task FilesRmIfExistsAsync(
        string mfsPath,
        IHttpClientFactory http,
