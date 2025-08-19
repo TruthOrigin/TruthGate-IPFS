@@ -15,40 +15,41 @@ namespace TruthGate_Web.Utils
         public static string IndexHtml(string? overrideUrl = null) => $@"<!doctype html>
 <meta charset=""utf-8"">
 <meta name=""viewport"" content=""width=device-width, initial-scale=1"">
-<title>Resolving…</title>
+<title>Resolving...</title>
 <style>
   html, body {{ height:100%; width:100%; margin:0; padding:0; background:transparent; }}
-  body > * {{ display:none; }} /* no overlay/UI during resolve */
   iframe#tg-frame {{ position:fixed; inset:0; width:100vw; height:100vh; border:0; display:block; }}
 </style>
 <script>
 (async () => {{
   const OVERRIDE = {(overrideUrl is null ? "null" : $"'{overrideUrl.Replace("'", "\\'")}'")};
+  const REDIRECT_DOC = 'QmRAy95PUSX58yNRLh5grYuz3x5JLwmF4UqJnBtQeqZK4u';
 
-  // --- 0) IPFS presence detection: if true => forbid override (to avoid collisions)
+  // --- 0) IPFS presence detection: if true => forbid override (avoid collisions)
   function ipfsDetected() {{
     try {{
       if (typeof window.ipfs !== 'undefined') return true;
       if (typeof window.ipfsCompanion !== 'undefined') return true;
 
-      // Weak heuristic: same-origin SW actively controlling page + typical ipfs-y path hints
-      const looksIpfsPath = /\\/(ipfs|ipns)\\//.test(location.pathname);
+      // Heuristic: same-origin SW is controlling an /ipfs/ or /ipns/ path
+      const looksIpfsPath = /\/(ipfs|ipns)\//.test(location.pathname);
       if (navigator.serviceWorker && navigator.serviceWorker.controller && looksIpfsPath) return true;
-    }} catch {{}}
+    }} catch (e) {{}}
     return false;
   }}
 
   const forbidOverride = ipfsDetected();
 
   // Utility: quick HEAD probe with a short timeout. CORS required to read .ok; otherwise returns false.
-  async function isLiveHead(url, ms = 2500) {{
+  async function isLiveHead(url, ms) {{
     try {{
+      ms = ms || 2500;
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), ms);
       const res = await fetch(url, {{ method: 'HEAD', mode: 'cors', cache: 'no-store', signal: ctrl.signal }});
       clearTimeout(t);
       return !!(res && res.ok);
-    }} catch {{
+    }} catch (e) {{
       return false;
     }}
   }}
@@ -60,20 +61,18 @@ namespace TruthGate_Web.Utils
     f.src = src;
     f.referrerPolicy = 'no-referrer';
     f.setAttribute('loading', 'eager');
-    // Minimal sandbox; expand if the inner app needs forms/downloads, etc.
+    // Expand sandbox if inner app needs forms/downloads/storage
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin');
     document.body.replaceChildren(f);
   }}
 
   // --- 1) If override provided AND not forbidden by IPFS detection, try it FIRST
   if (OVERRIDE && !forbidOverride) {{
-    // Probe common landing doc if URL is a directory
-    let probe = OVERRIDE;
     try {{
       const u = new URL(OVERRIDE, location.href);
       const endsWithSlash = u.pathname.endsWith('/');
       const probeUrl = endsWithSlash ? new URL('index.html', u).toString() : u.toString();
-      const altProbe = !endsWithSlash ? new URL(u.pathname.replace(/\\/?$/, '/index.html'), u).toString() : null;
+      const altProbe = !endsWithSlash ? new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString() : null;
 
       if (await isLiveHead(probeUrl) || (altProbe && await isLiveHead(altProbe))) {{
         // Use override EXACTLY as provided (no query params added)
@@ -102,7 +101,7 @@ namespace TruthGate_Web.Utils
         if (!res.ok) continue;
         const m = await res.json();
         if (m && m.current) {{ meta = m; break; }}
-      }} catch {{}}
+      }} catch (e) {{}}
     }}
 
     if (!meta || !meta.current) throw new Error('No TGP');
@@ -120,12 +119,13 @@ namespace TruthGate_Web.Utils
 
     const redirect = `https://dweb.link/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
     mountFrame(redirect);
-  }} catch {{
+  }} catch (e) {{
     document.body.replaceChildren(document.createTextNode('Failed to resolve pointer.'));
   }}
 }})();
 </script>
 <body></body>";
+
 
 
         public static string TgpJson(string currentCid) =>
