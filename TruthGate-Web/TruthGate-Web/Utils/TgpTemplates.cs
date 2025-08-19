@@ -24,11 +24,9 @@ namespace TruthGate_Web.Utils
 (async () => {{
   const OVERRIDE = {(overrideUrl is null ? "null" : $"'{overrideUrl.Replace("'", "\\'")}'")};
   const REDIRECT_DOC = 'QmRAy95PUSX58yNRLh5grYuz3x5JLwmF4UqJnBtQeqZK4u';
-  const WATCHDOG_MS = 3500; // how long to wait before declaring the load blocked
+  const WATCHDOG_MS = 3500;
 
-  function isIpfsLikeHost(host) {{
-    return /\.ipns\./.test(host) || /\.ipfs\./.test(host);
-  }}
+  function isIpfsLikeHost(host) {{ return /\.ipns\./.test(host) || /\.ipfs\./.test(host); }}
 
   function ipfsDetected() {{
     try {{
@@ -41,7 +39,7 @@ namespace TruthGate_Web.Utils
     return false;
   }}
 
-  const forbidOverride = ipfsDetected();
+  const preferTopNav = ipfsDetected(); // ← key change
 
   async function isLiveHead(url, ms) {{
     try {{
@@ -51,26 +49,20 @@ namespace TruthGate_Web.Utils
       const res = await fetch(url, {{ method: 'HEAD', mode: 'cors', cache: 'no-store', signal: ctrl.signal }});
       clearTimeout(t);
       return !!(res && res.ok);
-    }} catch (e) {{
-      return false;
-    }}
+    }} catch (e) {{ return false; }}
   }}
 
   function showBlockedMessage(targetHref, triedSrc) {{
-    // Minimal inline UI with two links
     const wrap = document.createElement('div');
     wrap.style.cssText = 'max-width:720px;margin:40px auto;padding:16px;font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;color:#ddd;background:#1b1b1b;border:1px solid #333;border-radius:12px';
     wrap.innerHTML =
-      '<h1 style=""margin:0 0 8px;font-size:18px"">We could not auto-open the page</h1>' +
-      '<p style=""margin:0 0 12px"">This often happens when an ad blocker or privacy extension blocks iframes or requests. ' +
-      'You can continue by clicking one of the links below, or whitelist this site and refresh.</p>' +
+      '<h1 style=""margin:0 0 8px;font-size:18px"">We could not open the page automatically</h1>' +
+      '<p style=""margin:0 0 12px"">An ad blocker or extension blocked the request. Click a link below, or allow this site and refresh.</p>' +
       '<div style=""display:flex;gap:10px;flex-wrap:wrap;margin:12px 0"">' +
-        '<a href=""' + targetHref + '"" target=""_blank"" rel=""noopener noreferrer"" ' +
-          'style=""padding:10px 14px;background:#2b7cff;color:#fff;text-decoration:none;border-radius:8px"">Open direct CID</a>' +
-        '<a href=""' + triedSrc + '"" target=""_blank"" rel=""noopener noreferrer"" ' +
-          'style=""padding:10px 14px;background:#444;color:#fff;text-decoration:none;border-radius:8px"">Open via redirect URL</a>' +
+        '<a href=""' + targetHref + '"" target=""_blank"" rel=""noopener noreferrer"" style=""padding:10px 14px;background:#2b7cff;color:#fff;text-decoration:none;border-radius:8px"">Open direct CID</a>' +
+        (triedSrc ? ('<a href=""' + triedSrc + '"" target=""_blank"" rel=""noopener noreferrer"" style=""padding:10px 14px;background:#444;color:#fff;text-decoration:none;border-radius:8px"">Open via redirect URL</a>') : '') +
       '</div>' +
-      '<div style=""font-size:12px;opacity:.8;margin-top:8px"">If this keeps happening, try disabling the blocker for this page.</div>';
+      '<div style=""font-size:12px;opacity:.8;margin-top:8px"">Tip: IPFS Companion often rewrites gateways to localhost; some blockers stop iframes to localhost.</div>';
     document.body.replaceChildren(wrap);
   }}
 
@@ -84,68 +76,71 @@ namespace TruthGate_Web.Utils
 
     let settled = false;
     const timer = setTimeout(() => {{
-      if (!settled) {{
-        settled = true;
-        showBlockedMessage(fallbackCidHref, src);
-      }}
+      if (!settled) {{ settled = true; showBlockedMessage(fallbackCidHref, src); }}
     }}, WATCHDOG_MS);
 
-    f.addEventListener('load', () => {{
-      if (!settled) {{
-        settled = true;
-        clearTimeout(timer);
-      }}
-    }});
-    f.addEventListener('error', () => {{
-      if (!settled) {{
-        settled = true;
-        clearTimeout(timer);
-        showBlockedMessage(fallbackCidHref, src);
-      }}
-    }});
-
+    f.addEventListener('load', () => {{ if (!settled) {{ settled = true; clearTimeout(timer); }} }});
+    f.addEventListener('error', () => {{ if (!settled) {{ settled = true; clearTimeout(timer); showBlockedMessage(fallbackCidHref, src); }} }});
     document.body.replaceChildren(f);
   }}
 
-  // 1) Try override first (if allowed)
-  if (OVERRIDE && !forbidOverride) {{
+  function topNavigateWithGuard(src, fallbackHref) {{
     try {{
-      const u = new URL(OVERRIDE, location.href);
-      if (!isIpfsLikeHost(u.hostname)) {{
-        const endsWithSlash = u.pathname.endsWith('/');
-        const probeUrl = endsWithSlash ? new URL('index.html', u).toString() : u.toString();
-        const altProbe = !endsWithSlash ? new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString() : null;
-
-        if (await isLiveHead(probeUrl) || (altProbe && await isLiveHead(altProbe))) {{
-          // Use override EXACTLY as provided (no params)
-          mountFrameWithGuard(u.toString(), u.toString());
-          return;
+      // Try to leave no history entry so IPNS URL isn’t stuck in back stack
+      if (typeof location.replace === 'function') location.replace(src); else location.href = src;
+      // Watchdog: if we are still on the same origin after a moment, show fallback UI
+      setTimeout(() => {{
+        try {{
+          // If we’re still here (did not navigate), show fallback
+          showBlockedMessage(fallbackHref, src);
+        }} catch (e) {{
+          showBlockedMessage(fallbackHref, src);
         }}
-      }}
-    }} catch (e) {{}}
+      }}, WATCHDOG_MS);
+    }} catch (e) {{
+      showBlockedMessage(fallbackHref, src);
+    }}
   }}
 
-  // 2) TGP -> redirect doc (ipfs.io in your version)
-  try {{
+  // --- Resolve TGP (we need current CID for either path)
+  async function getCurrentFromTgp() {{
     const origin = location.origin;
     const path = location.pathname;
     const baseDir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
     const candidates = [ origin + '/tgp.json', origin + baseDir + 'tgp.json', 'tgp.json' ];
-
-    let meta = null;
     for (const url of candidates) {{
       try {{
         const res = await fetch(url, {{ cache: 'no-store' }});
         if (!res.ok) continue;
         const m = await res.json();
-        if (m && m.current) {{ meta = m; break; }}
+        if (m && m.current) {{
+          return m.current.startsWith('/ipfs/') ? m.current.slice(6) : m.current;
+        }}
+      }} catch (e) {{}}
+    }}
+    throw new Error('No TGP');
+  }}
+
+  try {{
+    const current = await getCurrentFromTgp();
+
+    // If override is allowed AND not IPFS context, try it first (iframe path)
+    if (OVERRIDE && !preferTopNav) {{
+      try {{
+        const u = new URL(OVERRIDE, location.href);
+        if (!isIpfsLikeHost(u.hostname)) {{
+          const endsWithSlash = u.pathname.endsWith('/');
+          const probeUrl = endsWithSlash ? new URL('index.html', u).toString() : u.toString();
+          const altProbe  = !endsWithSlash ? new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString() : null;
+          if (await isLiveHead(probeUrl) || (altProbe && await isLiveHead(altProbe))) {{
+            mountFrameWithGuard(u.toString(), u.toString());
+            return;
+          }}
+        }}
       }} catch (e) {{}}
     }}
 
-    if (!meta || !meta.current) throw new Error('No TGP');
-
-    const current = meta.current.startsWith('/ipfs/') ? meta.current.slice(6) : meta.current;
-
+    // Build redirect-doc and direct-CID URLs
     const params = new URLSearchParams({{
       autoadapt: '0',
       requiresorigin: '1',
@@ -154,17 +149,25 @@ namespace TruthGate_Web.Utils
       magiclibraryconfirmation: '0',
       resolveweb3domain: '0'
     }});
+    const redirectUrl = `https://ipfs.io/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
+    const directCid   = 'https://ipfs.io/ipfs/' + encodeURIComponent(current);
 
-    const redirect = `https://ipfs.io/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
-    const directCid = 'https://ipfs.io/ipfs/' + encodeURIComponent(current);
+    if (preferTopNav) {{
+      // Let Companion rewrite to localhost in top window; avoids localhost-in-iframe blocks
+      topNavigateWithGuard(directCid, directCid);
+      return;
+    }}
 
-    mountFrameWithGuard(redirect, directCid);
+    // Non-IPFS users: iframe path with watchdog fallback
+    mountFrameWithGuard(redirectUrl, directCid);
+
   }} catch (e) {{
     document.body.replaceChildren(document.createTextNode('Failed to resolve pointer.'));
   }}
 }})();
 </script>
 <body></body>";
+
 
 
 
