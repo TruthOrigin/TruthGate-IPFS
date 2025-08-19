@@ -14,6 +14,7 @@ using TruthGate_Web.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using TruthGate_Web.Models;
+using TruthGate_Web.Interfaces;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -61,6 +62,8 @@ builder.Services.AddHostedService(sp => (PublishQueue)sp.GetRequiredService<IPub
 builder.Services.AddMudServices();
 builder.Services.AddBlazoredLocalStorage();
 builder.Services.AddControllers();
+
+builder.Services.AddScoped<ITruthGatePublishService, TruthGatePublishService>();
 
 if (!builder.Environment.IsDevelopment())
 {

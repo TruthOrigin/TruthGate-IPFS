@@ -3,6 +3,7 @@
 @using System.Text.RegularExpressions
 @using MudBlazor
 @using TruthGate_Web.Components.Pages.Settings.Shared
+@using TruthGate_Web.Interfaces
 @using TruthGate_Web.Models
 @using TruthGate_Web.Utils
 @inject IConfigService ConfigSvc
@@ -12,6 +13,7 @@
 @inject IJSRuntime JS
 @inject IHttpClientFactory HttpFactory
 @inject IApiKeyProvider Keys
+@inject ITruthGatePublishService PublishService
 
 <MudContainer Class="py-3" MaxWidth="MudBlazor.MaxWidth.Medium">
     <div class="flex items-center justify-between mb-4">
@@ -187,14 +189,29 @@
 
     private async Task CopyToClipboard(string s)
         => await JS.InvokeVoidAsync("navigator.clipboard.writeText", s);
+
+
     private async Task BackupDomain(EdgeDomain d)
     {
         var pass = await PromptAsync("Backup passphrase", "Enter a passphrase to encrypt your IPNS key export.");
         if (string.IsNullOrWhiteSpace(pass)) return;
 
-        var url = $"/api/domains/{Uri.EscapeDataString(d.Domain)}/backup?passphrase={Uri.EscapeDataString(pass)}";
-        await JS.InvokeVoidAsync("open", url, "_blank"); // save-as
+        try
+        {
+            var (bytes, fileName) = await PublishService.ExportBackupAsync(d.Domain, pass, CancellationToken.None);
+
+            // ship it to the browser
+            var b64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("truthGateDownloadBase64", fileName, "application/json", b64);
+
+            Snackbar.Add($"Backup generated: {fileName}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Backup failed: {ex.Message}", Severity.Error);
+        }
     }
+
 
     private async Task ImportDomain()
     {

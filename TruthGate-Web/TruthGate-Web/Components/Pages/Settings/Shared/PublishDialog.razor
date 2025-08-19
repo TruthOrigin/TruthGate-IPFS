@@ -2,10 +2,13 @@
 @using System.Net.Http.Headers
 @using FluentValidation
 @using Microsoft.AspNetCore.Components.Forms
+@using TruthGate_Web.Interfaces
 @inject IHttpClientFactory HttpFactory
 @inject ISnackbar Snackbar
 @inject IApiKeyProvider Keys
 @inject NavigationManager Nav
+@inject ITruthGatePublishService PublishService
+
 <style>
     .upload-zone {
         position: relative;
@@ -225,60 +228,36 @@
       return normalized;
   }
 
-  private async Task UploadAsync()
-  {
-      if (_model.Files is null || !_model.Files.Any())
-      { Snackbar.Add("Please add files first.", MudBlazor.Severity.Warning); return; }
+    private async Task UploadAsync()
+    {
+        if (_model.Files is null || !_model.Files.Any())
+        { Snackbar.Add("Please add files first.", MudBlazor.Severity.Warning); return; }
 
-      var mapping = BuildNormalizedMapping(previewOnly: false);
-      if (!string.IsNullOrWhiteSpace(_error))
-      { Snackbar.Add(_error!, MudBlazor.Severity.Error); return; }
+        var mapping = BuildNormalizedMapping(previewOnly: false);
+        if (!string.IsNullOrWhiteSpace(_error))
+        { Snackbar.Add(_error!, MudBlazor.Severity.Error); return; }
 
-      if (!mapping.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
-      { Snackbar.Add("No index.html at root after normalization.", MudBlazor.Severity.Error); return; }
+        if (!mapping.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+        { Snackbar.Add("No index.html at root after normalization.", MudBlazor.Severity.Error); return; }
 
-      var client = HttpFactory.CreateClient();
-      client.BaseAddress = new Uri(Nav.BaseUri); // FIX absolute URI
+        _busy = true; _busyMsg = "Uploading to staging…"; StateHasChanged();
+        try
+        {
+            // Convert to (IBrowserFile, RelPath) tuples
+            var tuples = mapping.Select(n => (n.File, n.RelPath));
 
-      using var form = new MultipartFormDataContent();
+            var (jobId, count) = await PublishService.PublishFromBrowserFilesAsync(Domain, tuples, CancellationToken.None);
+            Snackbar.Add($"Upload queued (staging complete). Files: {count}. Job: {jobId}", MudBlazor.Severity.Success);
+            MudDialog.Close();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Upload error: {ex.Message}", MudBlazor.Severity.Error);
+        }
+        finally
+        {
+            _busy = false; _busyMsg = null; StateHasChanged();
+        }
+    }
 
-      foreach (var n in mapping)
-      {
-          var stream = n.File.OpenReadStream(long.MaxValue);
-          var part = new StreamContent(stream);
-          var ct = string.IsNullOrWhiteSpace(n.File.ContentType) ? "application/octet-stream" : n.File.ContentType;
-          part.Headers.ContentType = new MediaTypeHeaderValue(ct);
-          var leaf = Path.GetFileName(n.RelPath);
-          form.Add(part, n.RelPath, leaf);
-      }
-
-      var url = $"/api/truthgate/v1/admin/{Uri.EscapeDataString(Domain)}/publish";
-      using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
-      req.Headers.Add("X-API-Key", Keys.GetCurrentKey());
-
-      _busy = true; _busyMsg = "Uploading to staging…"; StateHasChanged();
-      try
-      {
-          var res = await client.SendAsync(req);
-          if (res.IsSuccessStatusCode)
-          {
-              Snackbar.Add("Upload queued (staging complete).", MudBlazor.Severity.Success);
-              MudDialog.Close(); // now safe to close
-          }
-          else
-          {
-              var code = (int)res.StatusCode;
-              var body = await res.Content.ReadAsStringAsync();
-              Snackbar.Add($"Publish failed: {code} {body}", MudBlazor.Severity.Error);
-          }
-      }
-      catch (Exception ex)
-      {
-          Snackbar.Add($"Upload error: {ex.Message} - {ex?.InnerException?.Message}", MudBlazor.Severity.Error);
-      }
-      finally
-      {
-          _busy = false; _busyMsg = null; StateHasChanged();
-      }
-  }
 }

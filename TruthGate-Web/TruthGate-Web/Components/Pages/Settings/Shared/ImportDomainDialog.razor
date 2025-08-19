@@ -1,10 +1,11 @@
 ﻿@using Microsoft.AspNetCore.Components.Forms
 @using System.Net.Http.Headers
+@using TruthGate_Web.Interfaces
 @inject IHttpClientFactory HttpFactory
 @inject ISnackbar Snackbar
 @inject IApiKeyProvider Keys
 @inject NavigationManager Nav
-
+@inject ITruthGatePublishService PublishService
 <MudDialog>
     <DialogContent>
         <MudTextField Label="Passphrase"
@@ -48,33 +49,18 @@
     {
         if (_file is null || string.IsNullOrWhiteSpace(_pass)) return;
 
-        var client = HttpFactory.CreateClient();
-        using var form = new MultipartFormDataContent();
-
-        var stream = _file.OpenReadStream(long.MaxValue); // don't dispose before send
-        var part = new StreamContent(stream);
-        part.Headers.ContentType = new MediaTypeHeaderValue(
-            string.IsNullOrWhiteSpace(_file.ContentType) ? "application/octet-stream" : _file.ContentType);
-
-        form.Add(part, "file", _file.Name);
-
-        // build absolute URL from the app’s base URI
-        var rel = $"/api/truthgate/v1/admin/import?passphrase={Uri.EscapeDataString(_pass)}";
-        var abs = new Uri(new Uri(Nav.BaseUri), rel);
-
-        using var req = new HttpRequestMessage(HttpMethod.Post, abs) { Content = form };
-        req.Headers.Add("X-API-Key", Keys.GetCurrentKey()); // internal rotating key
-
-        var res = await client.SendAsync(req);
-
-        if (res.IsSuccessStatusCode)
+        try
         {
-            Snackbar.Add("Imported.", Severity.Success);
+            await using var stream = _file.OpenReadStream(long.MaxValue);
+            var (domain, key, peerId) = await PublishService.ImportBackupAsync(stream, _pass, CancellationToken.None);
+
+            Snackbar.Add($"Imported: {domain} (key: {key}, peer: {peerId})", Severity.Success);
             MudDialog.Close();
         }
-        else
+        catch (Exception ex)
         {
-            Snackbar.Add($"Import failed: {(int)res.StatusCode}", Severity.Error);
+            Snackbar.Add($"Import failed: {ex.Message}", Severity.Error);
         }
     }
+
 }
