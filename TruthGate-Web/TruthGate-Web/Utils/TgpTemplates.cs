@@ -6,9 +6,9 @@ namespace TruthGate_Web.Utils
     {
         private const string RedirectDoc = "QmRAy95PUSX58yNRLh5grYuz3x5JLwmF4UqJnBtQeqZK4u";
 
-        // Optional: call IndexHtml("https://truthgate.io")
-        // If null (default), it always uses dweb.link.
-        public static string IndexHtml(string? overrideBaseUrl = null) => $@"<!doctype html>
+        // If overrideUrl is non-null and reachable, we iframe it AS-IS (no params).
+        // Otherwise, we resolve tgp.json and use the dweb redirect doc.
+        public static string IndexHtml(string? overrideUrl = null) => $@"<!doctype html>
 <meta charset=""utf-8"">
 <meta name=""viewport"" content=""width=device-width, initial-scale=1"">
 <title>Resolving…</title>
@@ -17,96 +17,91 @@ namespace TruthGate_Web.Utils
   .wrap {{ position:fixed; inset:0; display:grid; place-items:center; }}
   .msg {{ opacity:.85; letter-spacing:.2px; }}
   iframe {{ position:fixed; inset:0; width:100vw; height:100vh; border:0; }}
-  .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
 </style>
 <script>
 (async () => {{
-  const OVERRIDE = {(overrideBaseUrl is null ? "null" : $"'{overrideBaseUrl.Replace("'", "\\'")}'")};
+  const OVERRIDE = {(overrideUrl is null ? "null" : $"'{overrideUrl.Replace("'", "\\'")}'")};
 
-  const params = new URLSearchParams({{
-    autoadapt: '0',
-    requiresorigin: '1',
-    web3domain: '0',
-    immediatecontinue: '1',
-    magiclibraryconfirmation: '0',
-    resolveweb3domain: '0'
-  }});
-
-  // 1) Locate tgp.json (root → same dir → relative)
-  const origin = location.origin;
-  const path = location.pathname;
-  const baseDir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
-  const candidates = [
-    origin + '/tgp.json',
-    origin + baseDir + 'tgp.json',
-    'tgp.json'
-  ];
-
-  let meta = null;
-  for (const url of candidates) {{
+  // Helper: quick HEAD probe with short timeout.
+  async function isLive(url) {{
     try {{
-      const res = await fetch(url, {{ cache: 'no-store' }});
-      if (!res.ok) continue;
-      const m = await res.json();
-      if (m && m.current) {{ meta = m; break; }}
-    }} catch {{ /* continue */ }}
-  }}
-  if (!meta || !meta.current) {{
-    document.body.innerHTML = '<div class=""wrap""><div class=""msg"">Failed to resolve pointer.</div></div>';
-    return;
-  }}
-
-  const current = meta.current.startsWith('/ipfs/')
-    ? meta.current.slice(6)
-    : meta.current;
-
-  const buildDweb = (cid) =>
-    `https://dweb.link/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(cid)}}&${{params.toString()}}`;
-
-  const trimSlash = (s) => s.replace(/\/+$/,'');
-  const buildOverride = (base, cid) =>
-    `${{trimSlash(base)}}/index.html?redirectURL=${{encodeURIComponent(cid)}}&${{params.toString()}}`;
-
-  // 2) Decide which URL to iframe
-  let src = buildDweb(current);
-
-  if (OVERRIDE) {{
-    try {{
-      // NOTE: requires CORS enabled on the override host for this HEAD to be readable (Access-Control-Allow-Origin: *).
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 2500); // quick failover
-      const head = await fetch(`${{trimSlash(OVERRIDE)}}/index.html`, {{
-        method: 'HEAD',
-        mode: 'cors',
-        cache: 'no-store',
-        signal: ctrl.signal
-      }});
+      const t = setTimeout(() => ctrl.abort(), 2500);
+      const res = await fetch(url, {{ method: 'HEAD', mode: 'cors', cache: 'no-store', signal: ctrl.signal }});
       clearTimeout(t);
-      if (head && head.ok) {{
-        src = buildOverride(OVERRIDE, current);
-      }}
-    }} catch {{
-      // swallow and keep dweb
+      return res && res.ok;
+    }} catch {{ return false; }}
+  }}
+
+  // If override provided, probe it FIRST (prefer /index.html if the URL ends with '/')…
+  if (OVERRIDE) {{
+    const u = new URL(OVERRIDE, location.href);
+    const probe1 = u.pathname.endsWith('/') ? new URL('index.html', u).toString() : u.toString();
+    const probe2 = u.pathname.endsWith('/') ? null : new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString();
+
+    if (await isLive(probe1) || (probe2 && await isLive(probe2))) {{
+      const iframe = document.createElement('iframe');
+      iframe.src = u.toString(); // ← Use the override EXACTLY as provided (no query params added)
+      iframe.referrerPolicy = 'no-referrer';
+      iframe.setAttribute('loading', 'eager');
+      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+      document.body.innerHTML = '';
+      document.body.appendChild(iframe);
+      return;
     }}
   }}
 
-  // 3) Render the iframe full-screen
-  const iframe = document.createElement('iframe');
-  iframe.src = src;
-  iframe.referrerPolicy = 'no-referrer';
-  iframe.setAttribute('loading', 'eager');
-  // Minimal sandbox; expand if you need forms/downloads inside the iframe.
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-  document.body.innerHTML = '';
-  document.body.appendChild(iframe);
+  // No override (or it failed) — resolve via tgp.json and use the dweb redirect doc.
+  try {{
+    const origin = location.origin;
+    const path = location.pathname;
+    const baseDir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
+    const candidates = [
+      origin + '/tgp.json',
+      origin + baseDir + 'tgp.json',
+      'tgp.json'
+    ];
+
+    let meta = null;
+    for (const url of candidates) {{
+      try {{
+        const res = await fetch(url, {{ cache: 'no-store' }});
+        if (!res.ok) continue;
+        const m = await res.json();
+        if (m && m.current) {{ meta = m; break; }}
+      }} catch {{ /* continue */ }}
+    }}
+
+    if (!meta || !meta.current) throw 0;
+
+    const current = meta.current.startsWith('/ipfs/') ? meta.current.slice(6) : meta.current;
+
+    const params = new URLSearchParams({{
+      autoadapt: '0',
+      requiresorigin: '1',
+      web3domain: '0',
+      immediatecontinue: '1',
+      magiclibraryconfirmation: '0',
+      resolveweb3domain: '0'
+    }});
+
+    const src = `https://dweb.link/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
+
+    const iframe = document.createElement('iframe');
+    iframe.src = src;
+    iframe.referrerPolicy = 'no-referrer';
+    iframe.setAttribute('loading', 'eager');
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    document.body.innerHTML = '';
+    document.body.appendChild(iframe);
+  }} catch {{
+    document.body.innerHTML = '<div class=""wrap""><div class=""msg"">Failed to resolve pointer.</div></div>';
+  }}
 }})();
 </script>
-<noscript>
-  <div class=""wrap""><div class=""msg"">JavaScript is required to resolve the latest content.</div></div>
-</noscript>
-<body>
-  <div class=""wrap""><div class=""msg"">Resolving latest…</div></div>
-</body>";
+<noscript><div class=""wrap""><div class=""msg"">JavaScript is required to resolve the latest content.</div></div></noscript>
+<body><div class=""wrap""><div class=""msg"">Resolving latest…</div></div></body>";
+
 
 
         public static string TgpJson(string currentCid) =>
