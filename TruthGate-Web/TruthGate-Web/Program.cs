@@ -186,8 +186,7 @@ if (!builder.Environment.IsDevelopment())
                         default:
                             return fallback;
                     }
-                };
-
+                }
             });
         });
 
