@@ -6,52 +6,85 @@ namespace TruthGate_Web.Utils
     {
         private const string RedirectDoc = "QmRAy95PUSX58yNRLh5grYuz3x5JLwmF4UqJnBtQeqZK4u";
 
-        // If overrideUrl is non-null and reachable, we iframe it AS-IS (no params).
-        // Otherwise, we resolve tgp.json and use the dweb redirect doc.
+        // Behavior:
+        // 1) If IPFS is detected in-browser (Companion / js-ipfs SW), we SKIP override and go TGP→dweb.
+        // 2) Else if overrideUrl is provided and HEAD probe succeeds, we iframe it EXACTLY (no params).
+        // 3) Else we resolve TGP (tgp.json) and iframe the dweb redirect doc.
+        //
+        // This version ensures there’s no overlay/black bar; the iframe is full-viewport.
         public static string IndexHtml(string? overrideUrl = null) => $@"<!doctype html>
 <meta charset=""utf-8"">
 <meta name=""viewport"" content=""width=device-width, initial-scale=1"">
 <title>Resolving…</title>
 <style>
-  html,body {{ height:100%; margin:0; background:#0b0b0b; color:#ddd; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif; }}
-  .wrap {{ position:fixed; inset:0; display:grid; place-items:center; }}
-  .msg {{ opacity:.85; letter-spacing:.2px; }}
-  iframe {{ position:fixed; inset:0; width:100vw; height:100vh; border:0; }}
+  html, body {{ height:100%; width:100%; margin:0; padding:0; background:transparent; }}
+  body > * {{ display:none; }} /* no overlay/UI during resolve */
+  iframe#tg-frame {{ position:fixed; inset:0; width:100vw; height:100vh; border:0; display:block; }}
 </style>
 <script>
 (async () => {{
   const OVERRIDE = {(overrideUrl is null ? "null" : $"'{overrideUrl.Replace("'", "\\'")}'")};
 
-  // Helper: quick HEAD probe with short timeout.
-  async function isLive(url) {{
+  // --- 0) IPFS presence detection: if true => forbid override (to avoid collisions)
+  function ipfsDetected() {{
     try {{
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 2500);
-      const res = await fetch(url, {{ method: 'HEAD', mode: 'cors', cache: 'no-store', signal: ctrl.signal }});
-      clearTimeout(t);
-      return res && res.ok;
-    }} catch {{ return false; }}
+      if (typeof window.ipfs !== 'undefined') return true;
+      if (typeof window.ipfsCompanion !== 'undefined') return true;
+
+      // Weak heuristic: same-origin SW actively controlling page + typical ipfs-y path hints
+      const looksIpfsPath = /\\/(ipfs|ipns)\\//.test(location.pathname);
+      if (navigator.serviceWorker && navigator.serviceWorker.controller && looksIpfsPath) return true;
+    }} catch {{}}
+    return false;
   }}
 
-  // If override provided, probe it FIRST (prefer /index.html if the URL ends with '/')…
-  if (OVERRIDE) {{
-    const u = new URL(OVERRIDE, location.href);
-    const probe1 = u.pathname.endsWith('/') ? new URL('index.html', u).toString() : u.toString();
-    const probe2 = u.pathname.endsWith('/') ? null : new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString();
+  const forbidOverride = ipfsDetected();
 
-    if (await isLive(probe1) || (probe2 && await isLive(probe2))) {{
-      const iframe = document.createElement('iframe');
-      iframe.src = u.toString(); // ← Use the override EXACTLY as provided (no query params added)
-      iframe.referrerPolicy = 'no-referrer';
-      iframe.setAttribute('loading', 'eager');
-      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-      document.body.innerHTML = '';
-      document.body.appendChild(iframe);
-      return;
+  // Utility: quick HEAD probe with a short timeout. CORS required to read .ok; otherwise returns false.
+  async function isLiveHead(url, ms = 2500) {{
+    try {{
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), ms);
+      const res = await fetch(url, {{ method: 'HEAD', mode: 'cors', cache: 'no-store', signal: ctrl.signal }});
+      clearTimeout(t);
+      return !!(res && res.ok);
+    }} catch {{
+      return false;
     }}
   }}
 
-  // No override (or it failed) — resolve via tgp.json and use the dweb redirect doc.
+  // Utility: mount single fullscreen iframe
+  function mountFrame(src) {{
+    const f = document.createElement('iframe');
+    f.id = 'tg-frame';
+    f.src = src;
+    f.referrerPolicy = 'no-referrer';
+    f.setAttribute('loading', 'eager');
+    // Minimal sandbox; expand if the inner app needs forms/downloads, etc.
+    f.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    document.body.replaceChildren(f);
+  }}
+
+  // --- 1) If override provided AND not forbidden by IPFS detection, try it FIRST
+  if (OVERRIDE && !forbidOverride) {{
+    // Probe common landing doc if URL is a directory
+    let probe = OVERRIDE;
+    try {{
+      const u = new URL(OVERRIDE, location.href);
+      const endsWithSlash = u.pathname.endsWith('/');
+      const probeUrl = endsWithSlash ? new URL('index.html', u).toString() : u.toString();
+      const altProbe = !endsWithSlash ? new URL(u.pathname.replace(/\\/?$/, '/index.html'), u).toString() : null;
+
+      if (await isLiveHead(probeUrl) || (altProbe && await isLiveHead(altProbe))) {{
+        // Use override EXACTLY as provided (no query params added)
+        mountFrame(u.toString());
+        return;
+      }}
+    }} catch (e) {{}}
+    // If probe fails, fall through to TGP→dweb
+  }}
+
+  // --- 2) Resolve via TGP (root → sibling → relative), then dweb redirect doc
   try {{
     const origin = location.origin;
     const path = location.pathname;
@@ -69,10 +102,10 @@ namespace TruthGate_Web.Utils
         if (!res.ok) continue;
         const m = await res.json();
         if (m && m.current) {{ meta = m; break; }}
-      }} catch {{ /* continue */ }}
+      }} catch {{}}
     }}
 
-    if (!meta || !meta.current) throw 0;
+    if (!meta || !meta.current) throw new Error('No TGP');
 
     const current = meta.current.startsWith('/ipfs/') ? meta.current.slice(6) : meta.current;
 
@@ -85,23 +118,14 @@ namespace TruthGate_Web.Utils
       resolveweb3domain: '0'
     }});
 
-    const src = `https://dweb.link/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
-
-    const iframe = document.createElement('iframe');
-    iframe.src = src;
-    iframe.referrerPolicy = 'no-referrer';
-    iframe.setAttribute('loading', 'eager');
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-    document.body.innerHTML = '';
-    document.body.appendChild(iframe);
+    const redirect = `https://dweb.link/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
+    mountFrame(redirect);
   }} catch {{
-    document.body.innerHTML = '<div class=""wrap""><div class=""msg"">Failed to resolve pointer.</div></div>';
+    document.body.replaceChildren(document.createTextNode('Failed to resolve pointer.'));
   }}
 }})();
 </script>
-<noscript><div class=""wrap""><div class=""msg"">JavaScript is required to resolve the latest content.</div></div></noscript>
-<body><div class=""wrap""><div class=""msg"">Resolving latest…</div></div></body>";
-
+<body></body>";
 
 
         public static string TgpJson(string currentCid) =>
