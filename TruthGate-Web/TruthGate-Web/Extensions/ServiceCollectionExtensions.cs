@@ -39,18 +39,31 @@ namespace TruthGate_Web.Extensions
             //services.Configure<CertificateOptions>(config.GetSection("Certificate"));
 
             // Compression
+
             services.AddResponseCompression(options =>
             {
                 options.EnableForHttps = true;
+
+                // Add providers explicitly
+                options.Providers.Add<BrotliCompressionProvider>();
+                options.Providers.Add<GzipCompressionProvider>();
+
+                // Be explicit about compressible text/binary types
                 options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
                 {
-                "text/css",
-                "application/javascript",
-                "application/wasm",
-                "application/msgpack",
-                "font/woff2",
-                "image/svg+xml"
-            });
+                    "text/plain",
+                    "text/css",
+                    "text/html",
+                    "text/xml",
+                    "application/xml",
+                    "application/json",
+                    "application/ld+json",
+                    "application/x-ndjson",
+                    "application/javascript",
+                    "application/x-javascript",
+                    "image/svg+xml",
+                    "application/wasm",
+                });
             });
 
             services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.SmallestSize);

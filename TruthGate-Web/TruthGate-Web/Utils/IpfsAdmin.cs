@@ -8,6 +8,88 @@ namespace TruthGate_Web.Utils
 {
     public static class IpfsAdmin // lives near IpfsGateway
     {
+        // Centralized cache invalidation hooks
+        public static void InvalidateMfsPath(string mfsPath) => IpfsGateway.InvalidateMfsCascade(mfsPath);
+        public static void InvalidateCid(string cid) => IpfsCacheIndex.InvalidateCid(cid);
+
+        // Remove folder/file recursively and bust caches
+        public static async Task FilesRmTreeAsync(
+            string mfsPath, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var norm = IpfsGateway.NormalizeMfs(mfsPath);
+            var rest = $"/api/v0/files/rm?arg={Uri.EscapeDataString(norm)}&recursive=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, method: "POST", ct: ct);
+            // ignore non-2xx; path may not exist
+            InvalidateMfsPath(norm);
+        }
+
+        // Safe mkdir + invalidate
+        public static async Task FilesMkdirAsync(
+            string mfsPath, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var norm = IpfsGateway.NormalizeMfs(mfsPath);
+            var rest = $"/api/v0/files/mkdir?arg={Uri.EscapeDataString(norm)}&parents=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, method: "POST", ct: ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                var body = await res.Content.ReadAsStringAsync(ct);
+                if (!body.Contains("file already exists", StringComparison.OrdinalIgnoreCase))
+                    res.EnsureSuccessStatusCode();
+            }
+            InvalidateMfsPath(norm);
+        }
+
+        // Move + invalidate both ends
+        public static async Task FilesMvAsync(
+            string from, string to, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var normFrom = IpfsGateway.NormalizeMfs(from);
+            var normTo = IpfsGateway.NormalizeMfs(to);
+            var rest = $"/api/v0/files/mv?arg={Uri.EscapeDataString(normFrom)}&arg={Uri.EscapeDataString(normTo)}&parents=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, method: "POST", ct: ct);
+            res.EnsureSuccessStatusCode();
+            InvalidateMfsPath(normFrom);
+            InvalidateMfsPath(normTo);
+        }
+
+        // CP (MFStoMFS) + invalidate dest
+        public static async Task FilesCpAsync(
+            string from, string to, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var normFrom = IpfsGateway.NormalizeMfs(from);
+            var normTo = IpfsGateway.NormalizeMfs(to);
+            var rest = $"/api/v0/files/cp?arg={Uri.EscapeDataString(normFrom)}&arg={Uri.EscapeDataString(normTo)}&parents=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, method: "POST", ct: ct);
+            res.EnsureSuccessStatusCode();
+            InvalidateMfsPath(normTo);
+        }
+
+        // Pin/unpin wrappers (bust CID cache)
+        public static async Task PinAddRecursiveAsync(string cid, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var rest = $"/api/v0/pin/add?arg={Uri.EscapeDataString(cid)}&recursive=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, ct: ct);
+            res.EnsureSuccessStatusCode();
+            InvalidateCid(cid);
+        }
+
+        public static async Task PinRmRecursiveIfAsync(string cid, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var rest = $"/api/v0/pin/rm?arg={Uri.EscapeDataString(cid)}&recursive=true";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, ct: ct);
+            // ignore errors; still invalidate
+            InvalidateCid(cid);
+        }
+
+        // Key removal (best-effort)
+        public static async Task KeyRemoveIfExistsAsync(
+            string keyName, IHttpClientFactory http, IApiKeyProvider keys, CancellationToken ct = default)
+        {
+            var rest = $"/api/v0/key/rm?arg={Uri.EscapeDataString(keyName)}";
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, method: "POST", ct: ct);
+            // Some nodes 404 if missing — that's fine.
+        }
+
         // Create key if missing. type=ed25519.
         public static async Task<(string Name, string Id)> EnsureKeyAsync(
             string keyName, IHttpClientFactory http, IApiKeyProvider keys)

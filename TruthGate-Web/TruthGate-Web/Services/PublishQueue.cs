@@ -72,7 +72,7 @@ namespace TruthGate_Web.Services
                 ?? throw new InvalidOperationException("files/stat failed for staging.");
             await PinRecursiveAsync(newSiteCid, ct);
 
-            // 3) Swap: rm old, mv stage → target (fallback cp+rm)
+            // 3) Swap: rm old, mv stage to target (fallback cp+rm)
             await RemoveIfExists(siteTarget, ct);
             var moved = await TryMoveAsync(siteStage, siteTarget, ct);
             if (!moved)

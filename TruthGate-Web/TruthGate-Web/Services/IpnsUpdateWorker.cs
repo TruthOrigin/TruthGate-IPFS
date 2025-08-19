@@ -232,7 +232,7 @@ namespace TruthGate_Web.Services
                     var versionFolder = $"{ManagedRoot}/{e.Name}-v{nextVersion:000}";
                     var staged = $"{StagingRoot}/{e.Name}/{Guid.NewGuid():N}";
 
-                    // Stage → pin (pointer) → provide → promote
+                    // Stage to pin (pointer) to provide to promote
                     await EnsureFolderAsync($"{StagingRoot}/{e.Name}", ct);
                     await FilesCpFromIpfsAsync(pointerCid, staged, ct);
                     await PinAddRecursiveAsync(pointerCid, ct);
@@ -361,7 +361,7 @@ namespace TruthGate_Web.Services
             var from = $"/ipfs/{cid}";
             var rest = $"/api/v0/files/cp?arg={Uri.EscapeDataString(from)}&arg={Uri.EscapeDataString(destPath)}&parents=true";
             using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
-            if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"files/cp failed → {destPath} ({(int)res.StatusCode})");
+            if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"files/cp failed to {destPath} ({(int)res.StatusCode})");
         }
 
         private async Task FilesRmRecursiveAsync(string mfsPath, CancellationToken ct)
@@ -378,7 +378,7 @@ namespace TruthGate_Web.Services
             var rest = $"/api/v0/files/mv?arg={Uri.EscapeDataString(from)}&arg={Uri.EscapeDataString(to)}";
             using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys);
             if (!res.IsSuccessStatusCode)
-                throw new InvalidOperationException($"files/mv failed '{from}' → '{to}' ({(int)res.StatusCode})");
+                throw new InvalidOperationException($"files/mv failed '{from}' to '{to}' ({(int)res.StatusCode})");
         }
 
  

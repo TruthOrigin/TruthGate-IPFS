@@ -195,7 +195,7 @@
                     pinnedByCidV1[cidV1Key] = (name, path);
             }
 
-            // 2b) Build a CID→path index for /production and /production/*/*
+            // 2b) Build a CIDtopath index for /production and /production/*/*
             var prodIndex = await BuildProductionCidIndexAsync(); // already normalized to v1
 
             // 3) Build rows; try to map each pin
@@ -314,7 +314,7 @@
             // Pin recursively
             await PinAddRecursiveAsync(r.Cid);
 
-            Snackbar.Add($"Pinned '{r.Name}' → {r.Cid}", Severity.Success);
+            Snackbar.Add($"Pinned '{r.Name}' to {r.Cid}", Severity.Success);
             await Reload();
         }
         catch (Exception ex)

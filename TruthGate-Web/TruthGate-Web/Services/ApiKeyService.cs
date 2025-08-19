@@ -76,7 +76,7 @@ namespace TruthGate_Web.Services
 
         private static string Base64Url(ReadOnlySpan<byte> bytes)
         {
-            // Convert.ToBase64String → make it URL-safe and strip padding
+            // Convert.ToBase64String to make it URL-safe and strip padding
             var s = Convert.ToBase64String(bytes)
                 .Replace('+', '-')
                 .Replace('/', '_')

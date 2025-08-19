@@ -96,7 +96,7 @@ namespace TruthGate_Web.Middleware
                 if (Directory.Exists(fallback))
                     webRoot = fallback;
                 else
-                    return false; // No webroot → treat as not a static file
+                    return false; // No webroot to treat as not a static file
             }
 
             // Normalize the request path (/foo -> foo)

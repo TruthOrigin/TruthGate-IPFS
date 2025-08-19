@@ -24,18 +24,19 @@ namespace TruthGate_Web.Services
                 {
                     var cfg = _config.Get();
 
-                    // Domains where UseSSL == true
                     var want = cfg.Domains
                         .Where(d => bool.TryParse(d.UseSSL, out var ok) && ok)
                         .Select(d => (d.Domain ?? "").Trim().ToLowerInvariant())
                         .Where(h => !string.IsNullOrWhiteSpace(h))
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                    // 1) New hosts since last pass → queue if needed
+                    // Add authorized star-ish ipns names
+                    foreach (var h in _live.EnumerateAuthorizedIpnsHosts())
+                        want.Add(h);
+
                     foreach (var host in want.Except(lastSnapshot))
                         _live.TryQueueIssueIfMissing(host);
 
-                    // 2) All wanted hosts → queue if missing/expiring (provider will no-op if fresh)
                     foreach (var host in want)
                         _live.TryQueueIssueIfMissing(host);
 
@@ -50,4 +51,5 @@ namespace TruthGate_Web.Services
             }
         }
     }
+
 }

@@ -410,7 +410,7 @@ namespace TruthGate_Web.Utils
             }
         }
 
-        private static void InvalidateMfsCascade(string mfsPath)
+        public static void InvalidateMfsCascade(string mfsPath)
         {
             foreach (var a in EnumerateMfsAncestors(mfsPath, includeSelf: true))
                 IpfsCacheIndex.InvalidateMfs(a);
@@ -438,7 +438,7 @@ namespace TruthGate_Web.Utils
             if (string.IsNullOrWhiteSpace(after))
                 throw new InvalidOperationException($"mkdir succeeded but stat failed for '{mfsFolderPath}'");
 
-            // Targeted: invalidate MFS→CID for this path and all parents (so new CIDs will be fetched)
+            // Targeted: invalidate MFStoCID for this path and all parents (so new CIDs will be fetched)
             InvalidateMfsCascade(mfsFolderPath);
 
             // (optional) go-nuclear if you want: blow everything
@@ -511,7 +511,7 @@ namespace TruthGate_Web.Utils
 
 
 
-        // ----- MFS folder → root CID (with cache), and local presence checks -----
+        // ----- MFS folder to root CID (with cache), and local presence checks -----
         public static async Task<string?> ResolveMfsFolderToCidCachedAsync(
             string mfsFolderPath, IHttpClientFactory factory, IMemoryCache cache, TimeSpan ttl)
         {
@@ -958,7 +958,7 @@ namespace TruthGate_Web.Utils
       return '/' + u.replace(/^[./]+/, '');
     }}
 
-    // Already ipfs/ipns → leave
+    // Already ipfs/ipns to leave
     if (u.startsWith('/ipfs/') || u.startsWith('/ipns/')) return u;
 
     // Non JSON/JS: route under BASE

@@ -84,7 +84,7 @@ namespace TruthGate_Web.Endpoints
             // Your proxy copies request headers to the outgoing HttpRequestMessage and forwards the body stream.
             await IpfsGateway.Proxy(context, targetUri, clientFactory);
 
-            // ---- Convert HttpContext.Response → HttpResponseMessage ----
+            // ---- Convert HttpContext.Response to HttpResponseMessage ----
             bodyStream.Position = 0;
             var response = new HttpResponseMessage((HttpStatusCode)context.Response.StatusCode)
             {

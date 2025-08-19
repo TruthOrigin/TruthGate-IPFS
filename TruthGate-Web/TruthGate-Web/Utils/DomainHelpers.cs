@@ -6,21 +6,7 @@ using TruthGate_Web.Services;
 namespace TruthGate_Web.Utils
 {
     public static class DomainHelpers
-    {
-        /* public static string GetEffectiveHost(HttpContext ctx, IWebHostEnvironment env, DomainListOptions opt)
-         {
-             // In Development: ONLY emulate when DevEmulateHost is set. Otherwise, disable domain mapping.
-             if (env.IsDevelopment())
-             {
-                 if (!string.IsNullOrWhiteSpace(opt.DevEmulateHost))
-                     return opt.DevEmulateHost!.Trim();
-
-                 return ""; // <— crucial: treat as "not a mapped domain" in dev unless explicitly emulating
-             }
-
-             // Production: use real host header
-             return ctx.Request.Host.Host ?? "";
-         }*/
+    {       
         /// <summary>
         /// Returns the MFS folder for the mapped domain, or null if the current host is not mapped.
         /// The folder is built as "/{SitesRootBasePath}/{domain}" (default SitesRootBasePath = "production/sites").

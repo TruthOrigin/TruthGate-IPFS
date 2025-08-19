@@ -14,18 +14,26 @@ namespace TruthGate_Web.Configuration
 
         public Task StartAsync(CancellationToken ct)
         {
-            var hosts = _config.Get().Domains
+            var cfg = _config.Get();
+
+            // 1) Explicit domains
+            var hosts = cfg.Domains
                 .Where(d => bool.TryParse(d.UseSSL, out var ok) && ok)
                 .Select(d => (d.Domain ?? "").Trim().ToLowerInvariant())
                 .Where(h => !string.IsNullOrWhiteSpace(h))
                 .Distinct();
 
             foreach (var h in hosts)
-                _live.TryQueueIssueIfMissing(h);  // unified path
+                _live.TryQueueIssueIfMissing(h);
+
+            // 2) Star-ish ipns authorized subdomains
+            foreach (var h in _live.EnumerateAuthorizedIpnsHosts())
+                _live.TryQueueIssueIfMissing(h);
 
             return Task.CompletedTask;
         }
 
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
     }
+
 }

@@ -149,28 +149,36 @@ if (!builder.Environment.IsDevelopment())
                 {
                     var live = lo.ApplicationServices.GetRequiredService<LiveCertProvider>();
                     var fallback = live.GetSelfSigned();
-                    var sni = sniRaw?.Trim();
+                    var sni = sniRaw?.Trim()?.ToLowerInvariant();
 
                     if (string.IsNullOrWhiteSpace(sni) || IPAddress.TryParse(sni, out _))
                         return fallback;
 
-                    var decision = live.DecideForHost(sni);
+                    // --- normalize SNI ---
+                    if (sni.EndsWith(".")) sni = sni[..^1]; // strip trailing dot
+                    try
+                    {
+                        sni = new System.Globalization.IdnMapping().GetAscii(sni);
+                    }
+                    catch
+                    {
+                        // best-effort: leave as-is if normalization fails
+                    }
+
+                    var decision = live.DecideForHostIncludingStarish(sni);
                     switch (decision.Kind)
                     {
                         case SslDecisionKind.SelfSigned:
-                            return fallback;
-
                         case SslDecisionKind.NoneFailTls:
                             return fallback;
 
                         case SslDecisionKind.RealIfPresent:
                             {
-                                var issued = live.TryLoadIssued(sni);
+                                var issued = live.TryLoadIssued(sni); // exact host (star-ish)
                                 if (issued is not null) return issued;
 
-                                // only queue if not already in-flight
                                 if (!live.IsInFlight(sni))
-                                    live.QueueIssueIfMissing(sni);
+                                    live.TryQueueIssueIfMissing(sni);
 
                                 return fallback;
                             }
@@ -178,10 +186,12 @@ if (!builder.Environment.IsDevelopment())
                         default:
                             return fallback;
                     }
-                }
+                };
 
             });
         });
+
+
 
 
     });

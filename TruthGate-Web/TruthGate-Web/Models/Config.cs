@@ -4,7 +4,7 @@
     {
         public const string DefaultAdminHash = "/EUxvODjrpkTKnal6nVEAh2m+52H4OgXGEBLcE3xilcgZ8gbeE5ay/CfzYr9PCJ0";
         private List<UserAccount>? _users;
-
+        public IpnsWildCardSubDomain IpnsWildCardSubDomain { get; set; }
         public List<EdgeDomain> Domains { get; set; } = new List<EdgeDomain>();
         public List<ApiKey> ApiKeys { get; set; } = new List<ApiKey>();
         public List<IpnsKey> IpnsKeys { get; set; } = new List<IpnsKey>();
@@ -43,7 +43,13 @@
         }
     }
 
-    public class EdgeDomain
+    public class IpnsWildCardSubDomain
+    {
+        public string WildCardSubDomain { get; set; } = "";
+        public string UseSSL { get; set; } = "true";
+    }
+
+        public class EdgeDomain
     {
         public string Domain { get; set; } = "";
         public string UseSSL { get; set; } = "false";

@@ -92,7 +92,7 @@ namespace TruthGate_Web.Configuration
                     _challengeStore.Remove(token);
                 }
 
-                // 3) Finalize order (poll to READY → finalize → poll to VALID)
+                // 3) Finalize order (poll to READY to finalize to poll to VALID)
                 var acctKey = KeyFactory.NewKey(KeyAlgorithm.ES256);
                 var csrInfo = new CsrInfo { CommonName = host };
 

@@ -142,7 +142,7 @@ namespace TruthGate_Web.Middleware
             return new RunOnceResult(Handled: true, RetryCandidate: retryCandidate, Cid: cid, MfsPath: mfsPath);
         }
 
-        // Adds the big “mapped domain → IPFS gateway” behavior with one optional retry on stale cache
+        // Adds the big “mapped domain to IPFS gateway” behavior with one optional retry on stale cache
         public static IApplicationBuilder UseDomainGateway(this IApplicationBuilder app)
         {
             app.Use(async (ctx, next) =>
