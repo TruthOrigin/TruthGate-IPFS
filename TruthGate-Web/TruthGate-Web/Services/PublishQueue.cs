@@ -85,28 +85,15 @@ namespace TruthGate_Web.Services
             var finalSiteCid = await IpfsAdmin.FilesStatHashAsync(siteTarget, _http, _keys, ct) ?? newSiteCid;
             await PinRecursiveAsync(finalSiteCid, ct);
 
-            // 5) Write TGP bundle under /production/pinned/{tgpLeaf}
-            var tgpFolder = IpfsGateway.NormalizeMfs($"/production/pinned/{job.TgpLeaf}");
-            _ = await IpfsGateway.EnsureMfsFolderExistsAsync(tgpFolder, _http);
+            // 5) Build TGP bundle in a staging folder, then atomically swap into place
+            var tgpFinalFolder = IpfsGateway.NormalizeMfs($"/production/pinned/{job.TgpLeaf}");
+            var tgpStageFolder = IpfsGateway.NormalizeMfs($"/production/pinned/.staging.tgp.{job.TgpLeaf}.{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}");
 
-            // tgp.json
-            var tgpJson = TgpTemplates.TgpJson(finalSiteCid);
-            await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(tgpJson)))
-                await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/tgp.json", ms, _http, _keys, "application/json", ct);
+            // Ensure folders
+            _ = await IpfsGateway.EnsureMfsFolderExistsAsync("/production/pinned", _http);
+            _ = await IpfsGateway.EnsureMfsFolderExistsAsync(tgpStageFolder, _http);
 
-
-
-            // legal.md    (NOTE: media type without charset to avoid FormatException)
-            var legal = TgpTemplates.LegalMd(job.Domain);
-            await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(legal)))
-                await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/legal.md", ms, _http, _keys, "text/markdown", ct);
-
-            // 6) Pin TGP folder & publish IPNS using the domain’s key
-            var tgpCid = await IpfsAdmin.FilesStatHashAsync(tgpFolder, _http, _keys, ct)
-                ?? throw new InvalidOperationException("TGP folder stat failed.");
-            await PinRecursiveAsync(tgpCid, ct);
-
-            // Ensure per-domain key exists (default name based on DOMAIN)
+            // Ensure per-domain key exists (we need the peer id before generating index.html)
             var cfgSnapshot = _config.Get();
             var edSnapshot = (cfgSnapshot.Domains ?? new()).First(d => d.Domain.Equals(job.Domain, StringComparison.OrdinalIgnoreCase));
 
@@ -116,14 +103,37 @@ namespace TruthGate_Web.Services
 
             var (name, id) = await IpfsAdmin.EnsureKeyAsync(ipnsName, _http, _keys);
 
-            // index.html: pass override base URL (IPNS wildcard if configured, else the domain)
+            // Write TGP bundle files into staging
+            var tgpJson = TgpTemplates.TgpJson(finalSiteCid);
+            await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(tgpJson)))
+                await IpfsAdmin.FilesWriteAsync($"{tgpStageFolder}/tgp.json", ms, _http, _keys, "application/json", ct);
+
+            var legal = TgpTemplates.LegalMd(job.Domain);
+            await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(legal)))
+                await IpfsAdmin.FilesWriteAsync($"{tgpStageFolder}/legal.md", ms, _http, _keys, "text/markdown", ct);
+
+            // index.html must be part of the CID we publish
             var overrideBaseUrl = BuildTgpOverrideBaseUrl(edSnapshot, ipnsPeerId: id);
             var indexHtml = TgpTemplates.IndexHtml(overrideBaseUrl);
             await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(indexHtml)))
-                await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/index.html", ms, _http, _keys, "text/html", ct);
+                await IpfsAdmin.FilesWriteAsync($"{tgpStageFolder}/index.html", ms, _http, _keys, "text/html", ct);
 
-            // Publish pointer to the TGP bundle
+            // Atomically swap staging -> final (rm old + mv)
+            await RemoveIfExists(tgpFinalFolder, ct);
+            var movedTgp = await TryMoveAsync(tgpStageFolder, tgpFinalFolder, ct);
+            if (!movedTgp)
+            {
+                await CpAsync(tgpStageFolder, tgpFinalFolder, ct);
+                await RemoveIfExists(tgpStageFolder, ct);
+            }
+
+            // 6) Stat/pin the final TGP folder & publish IPNS
+            var tgpCid = await IpfsAdmin.FilesStatHashAsync(tgpFinalFolder, _http, _keys, ct)
+                ?? throw new InvalidOperationException("TGP folder stat failed (post-index).");
+
+            await PinRecursiveAsync(tgpCid, ct);
             await IpfsAdmin.NamePublishAsync(name, tgpCid, _http, _keys);
+
 
             // 7) Persist metadata (real UpdateAsync mutation)
             await _config.UpdateAsync(cfg =>
