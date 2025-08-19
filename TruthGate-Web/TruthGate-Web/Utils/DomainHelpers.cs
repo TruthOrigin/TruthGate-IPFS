@@ -36,13 +36,13 @@ namespace TruthGate_Web.Utils
                 return "/" + basePath + "/" + direct.Domain.Trim();
             }
 
-            // 2) Wildcard IPNS mapping (e.g. <keyOrPeer>.<wildcardRoot>)
+            // 2) Wildcard IPNS mapping -> **emulate the domain's SITE folder**, not TGP
             var wc = cfg.IpnsWildCardSubDomain?.WildCardSubDomain?.Trim();
             if (!string.IsNullOrWhiteSpace(wc))
             {
-                var maybePath = TryResolveWildcardToTgpPath(cfg, hostToMatch, wc);
-                if (!string.IsNullOrWhiteSpace(maybePath))
-                    return maybePath;
+                var maybeSitePath = TryResolveWildcardToSitePath(cfg, hostToMatch, wc, configuration);
+                if (!string.IsNullOrWhiteSpace(maybeSitePath))
+                    return maybeSitePath;
             }
 
             return null;
@@ -59,12 +59,51 @@ namespace TruthGate_Web.Utils
             var cfg = configSvc.Get();
             if (cfg?.Domains == null || cfg.Domains.Count == 0) return null;
 
-            // Only real domains carry redirect rules. Wildcard IPNS hosts don’t.
+            // Only exact domain matches can have redirects.
             var match = cfg.Domains.FirstOrDefault(d =>
                 !string.IsNullOrWhiteSpace(d?.Domain) &&
                 string.Equals(d.Domain.Trim(), hostToMatch.Trim(), StringComparison.OrdinalIgnoreCase));
 
             return match?.RedirectUrl;
+        }
+
+        // NEW: wildcard -> site path
+        private static string? TryResolveWildcardToSitePath(
+            TruthGate_Web.Models.Config cfg,
+            string host,
+            string wildcardRoot,
+            IConfiguration configuration)
+        {
+            // wildcardRoot like "ipns.example.com"; host like "<peerOrKey>.ipns.example.com"
+            if (!host.EndsWith("." + wildcardRoot, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var leftPart = host[..^(wildcardRoot.Length + 1)];
+            if (string.IsNullOrWhiteSpace(leftPart) || leftPart.Contains(' '))
+                return null;
+
+            // Use only the leftmost label as the identity
+            var firstDot = leftPart.IndexOf('.');
+            var keyOrPeer = firstDot >= 0 ? leftPart[..firstDot] : leftPart;
+            if (string.IsNullOrWhiteSpace(keyOrPeer)) return null;
+
+            // Find domain bound to this IPNS identity
+            var ed = cfg.Domains.FirstOrDefault(d =>
+                !string.IsNullOrWhiteSpace(d?.Domain) &&
+                (
+                    (!string.IsNullOrWhiteSpace(d.IpnsPeerId) && d.IpnsPeerId.Equals(keyOrPeer, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(d.IpnsKeyName) && d.IpnsKeyName.Equals(keyOrPeer, StringComparison.OrdinalIgnoreCase))
+                ));
+
+            if (ed is null) return null;
+
+            // Build SITE path (not TGP)
+            var siteLeaf = string.IsNullOrWhiteSpace(ed.SiteFolderLeaf)
+                ? (IpfsGateway.ToSafeLeaf(ed.Domain) ?? ed.Domain.ToLowerInvariant())
+                : ed.SiteFolderLeaf;
+
+            var basePath = (configuration["SitesRootBasePath"] ?? "production/sites").Trim().Trim('/');
+            return IpfsGateway.NormalizeMfs($"/{basePath}/{siteLeaf}");
         }
 
         private static string? TryResolveWildcardToTgpPath(TruthGate_Web.Models.Config cfg, string host, string wildcardRoot)
