@@ -67,7 +67,7 @@
 
                         <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
                         Size="Size.Small"
-                                       OnClick="@(() => CopyToClipboard($"{GetLabel(context)}.{_wildcardHost}"))" />
+                                       OnClick="@(() => CopyToClipboard($"https://{GetLabel(context)}.{_wildcardHost}"))" />
                     </MudStack>
                 }
             </MudTd>
