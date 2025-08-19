@@ -120,13 +120,61 @@ namespace TruthGate_Web.Utils
 
         // Export/import private key (we store armored form encrypted in config backup).
         public static async Task<string> KeyExportArmoredAsync(
-            string keyName, string password, IHttpClientFactory http, IApiKeyProvider keys)
+    string keyName, string passphrase, IHttpClientFactory http, IApiKeyProvider keys,
+    string? ipfsPath = null, string ipfsExe = "ipfs", CancellationToken ct = default)
         {
-            var rest = $"/api/v0/key/export?arg={Uri.EscapeDataString(keyName)}&password={Uri.EscapeDataString(password)}";
-            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys);
-            res.EnsureSuccessStatusCode();
-            return await res.Content.ReadAsStringAsync(); // PEM-like armored text
+            // 1) Try RPC (will 404 on vanilla Kubo)
+            var rest = $"/api/v0/key/export?arg={Uri.EscapeDataString(keyName)}&password={Uri.EscapeDataString(passphrase)}";
+            using (var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys))
+            {
+                if (res.IsSuccessStatusCode)
+                    return await res.Content.ReadAsStringAsync();
+
+                // If it’s anything other than 404, surface it (bad key name, auth, etc.)
+                if (res.StatusCode != System.Net.HttpStatusCode.NotFound)
+                {
+                    var body = await res.Content.ReadAsStringAsync();
+                    throw new InvalidOperationException($"key/export failed: {(int)res.StatusCode} {body}");
+                }
+            }
+
+            // 2) Fallback: use CLI export (cleartext PKCS#8 PEM), then higher-level code can seal it.
+            //    We write to a temp file because older Kubo doesn't support stdout for export.
+            var tmp = Path.Combine(Path.GetTempPath(), $"tg-key-{Guid.NewGuid():N}.pem");
+            try
+            {
+                var args = $"key export {EscapeArg(keyName)} -f pem-pkcs8-cleartext -o {EscapeArg(tmp)}";
+                var psi = new System.Diagnostics.ProcessStartInfo(ipfsExe, args)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                if (!string.IsNullOrWhiteSpace(ipfsPath))
+                    psi.Environment["IPFS_PATH"] = ipfsPath;
+
+                using var p = System.Diagnostics.Process.Start(psi)!;
+                var stderr = await p.StandardError.ReadToEndAsync();
+                var stdout = await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync(ct);
+
+                if (p.ExitCode != 0)
+                    throw new InvalidOperationException($"ipfs key export failed (exit {p.ExitCode}): {stderr}\n{stdout}");
+
+                // Read the PEM we just exported
+                return await File.ReadAllTextAsync(tmp, ct);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* best effort */ }
+            }
+
+            static string EscapeArg(string s)
+                => s.Any(ch => char.IsWhiteSpace(ch) || ch is '"' or '\'')
+                   ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
         }
+
 
         public static async Task<(string Name, string Id)> KeyImportArmoredAsync(
             string keyName, string password, string armored, IHttpClientFactory http, IApiKeyProvider keys)
