@@ -127,7 +127,7 @@ namespace TruthGate_Web.Utils
       resolveweb3domain: '0'
     }});
 
-    const redirect = `https://dweb.link/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
+    const redirect = `https://ipfs.io/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
     mountFrame(redirect);
   }} catch (e) {{
     document.body.replaceChildren(document.createTextNode('Failed to resolve pointer.'));
