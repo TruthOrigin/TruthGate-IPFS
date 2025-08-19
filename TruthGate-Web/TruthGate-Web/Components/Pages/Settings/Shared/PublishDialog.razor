@@ -274,7 +274,7 @@
       }
       catch (Exception ex)
       {
-          Snackbar.Add($"Upload error: {ex.Message}", MudBlazor.Severity.Error);
+          Snackbar.Add($"Upload error: {ex.Message} - {ex?.InnerException?.Message}", MudBlazor.Severity.Error);
       }
       finally
       {
