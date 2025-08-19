@@ -6,7 +6,7 @@ using TruthGate_Web.Services;
 namespace TruthGate_Web.Utils
 {
     public static class DomainHelpers
-    {       
+    {
         /// <summary>
         /// Returns the MFS folder for the mapped domain, or null if the current host is not mapped.
         /// The folder is built as "/{SitesRootBasePath}/{domain}" (default SitesRootBasePath = "production/sites").
@@ -15,31 +15,37 @@ namespace TruthGate_Web.Utils
         {
             var configSvc = ctx.RequestServices.GetRequiredService<IConfigService>();
             var configuration = ctx.RequestServices.GetRequiredService<IConfiguration>();
-            var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
 
             var hostToMatch = GetEffectiveHost(ctx);
-            if (string.IsNullOrWhiteSpace(hostToMatch))
-                return null;
+            if (string.IsNullOrWhiteSpace(hostToMatch)) return null;
 
             // If it's an IP address request, skip mapping
-            if (IPAddress.TryParse(hostToMatch, out _))
-                return null;
+            if (IPAddress.TryParse(hostToMatch, out _)) return null;
 
             var cfg = configSvc.Get();
-            if (cfg?.Domains == null || cfg.Domains.Count == 0)
-                return null;
+            if (cfg?.Domains == null || cfg.Domains.Count == 0) return null;
 
-            // Case-insensitive match against EdgeDomain.Domain
-            var match = cfg.Domains.FirstOrDefault(d =>
+            // 1) Exact domain mapping first
+            var direct = cfg.Domains.FirstOrDefault(d =>
                 !string.IsNullOrWhiteSpace(d?.Domain) &&
                 string.Equals(d.Domain.Trim(), hostToMatch.Trim(), StringComparison.OrdinalIgnoreCase));
 
-            if (match == null)
-                return null;
+            if (direct is not null)
+            {
+                var basePath = (configuration["SitesRootBasePath"] ?? "production/sites").Trim().Trim('/');
+                return "/" + basePath + "/" + direct.Domain.Trim();
+            }
 
-            var basePath = (configuration["SitesRootBasePath"] ?? "production/sites").Trim().Trim('/');
-            // MFS path must start with '/'
-            return "/" + basePath + "/" + match.Domain.Trim();
+            // 2) Wildcard IPNS mapping (e.g. <keyOrPeer>.<wildcardRoot>)
+            var wc = cfg.IpnsWildCardSubDomain?.WildCardSubDomain?.Trim();
+            if (!string.IsNullOrWhiteSpace(wc))
+            {
+                var maybePath = TryResolveWildcardToTgpPath(cfg, hostToMatch, wc);
+                if (!string.IsNullOrWhiteSpace(maybePath))
+                    return maybePath;
+            }
+
+            return null;
         }
 
         public static string? GetRedirectUrl(HttpContext ctx)
@@ -47,26 +53,61 @@ namespace TruthGate_Web.Utils
             var configSvc = ctx.RequestServices.GetRequiredService<IConfigService>();
 
             var hostToMatch = GetEffectiveHost(ctx);
-            if (string.IsNullOrWhiteSpace(hostToMatch))
-                return null;
-
-            // If it's an IP address request, skip mapping
-            if (IPAddress.TryParse(hostToMatch, out _))
-                return null;
+            if (string.IsNullOrWhiteSpace(hostToMatch)) return null;
+            if (IPAddress.TryParse(hostToMatch, out _)) return null;
 
             var cfg = configSvc.Get();
-            if (cfg?.Domains == null || cfg.Domains.Count == 0)
-                return null;
+            if (cfg?.Domains == null || cfg.Domains.Count == 0) return null;
 
-            // Case-insensitive match against EdgeDomain.Domain
+            // Only real domains carry redirect rules. Wildcard IPNS hosts don’t.
             var match = cfg.Domains.FirstOrDefault(d =>
                 !string.IsNullOrWhiteSpace(d?.Domain) &&
                 string.Equals(d.Domain.Trim(), hostToMatch.Trim(), StringComparison.OrdinalIgnoreCase));
 
-            if (match == null)
+            return match?.RedirectUrl;
+        }
+
+        private static string? TryResolveWildcardToTgpPath(TruthGate_Web.Models.Config cfg, string host, string wildcardRoot)
+        {
+            // wildcardRoot is like "ipns.truthgate.io" (no "*.")
+            // expected host is "<keyOrPeer>.ipns.truthgate.io"
+            // Require at least one extra label in front:
+            if (!host.EndsWith("." + wildcardRoot, StringComparison.OrdinalIgnoreCase))
                 return null;
 
-            return match.RedirectUrl;
+            var leftPart = host[..^(wildcardRoot.Length + 1)]; // strip ".<wildcardRoot>"
+            if (string.IsNullOrWhiteSpace(leftPart) || leftPart.Contains(' '))
+                return null;
+
+            var keyOrPeer = leftPart; // the leftmost label(s) before the wildcard root — we use the full leftPart
+                                      // Normalize to one label (common case "<peerId>.<wildcardRoot>")
+                                      // If someone used nested labels, we only take the leftmost as identity:
+            var firstDot = keyOrPeer.IndexOf('.');
+            if (firstDot >= 0) keyOrPeer = keyOrPeer[..firstDot];
+
+            if (string.IsNullOrWhiteSpace(keyOrPeer)) return null;
+
+            // Find a domain whose IPNS identity matches this left label
+            var ed = cfg.Domains.FirstOrDefault(d =>
+                !string.IsNullOrWhiteSpace(d?.Domain) &&
+                (
+                    (!string.IsNullOrWhiteSpace(d.IpnsPeerId) && d.IpnsPeerId.Equals(keyOrPeer, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(d.IpnsKeyName) && d.IpnsKeyName.Equals(keyOrPeer, StringComparison.OrdinalIgnoreCase))
+                )
+            );
+
+            if (ed is null) return null;
+
+            // For wildcard we map to the TGP bundle
+            var siteLeaf = string.IsNullOrWhiteSpace(ed.SiteFolderLeaf)
+                ? (IpfsGateway.ToSafeLeaf(ed.Domain) ?? ed.Domain.ToLowerInvariant())
+                : ed.SiteFolderLeaf;
+
+            var tgpLeaf = string.IsNullOrWhiteSpace(ed.TgpFolderLeaf)
+                ? $"tgp-{siteLeaf.Replace('.', '-')}"
+                : ed.TgpFolderLeaf;
+
+            return IpfsGateway.NormalizeMfs($"/production/pinned/{tgpLeaf}");
         }
 
         /// <summary>

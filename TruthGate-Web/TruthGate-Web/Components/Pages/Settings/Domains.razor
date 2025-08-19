@@ -20,16 +20,16 @@
 
         <MudStack Spacing="2" Row="true">
             <MudButton Variant="Variant.Filled"
-                       Color="Color.Primary"
-                       StartIcon="@Icons.Material.Filled.DomainAdd"
-                       OnClick="AddDomain">
+            Color="Color.Primary"
+            StartIcon="@Icons.Material.Filled.DomainAdd"
+            OnClick="AddDomain">
                 Add Domain
             </MudButton>
 
             <MudButton Variant="Variant.Filled"
-                       Color="Color.Secondary"
-                       StartIcon="@Icons.Material.Filled.UploadFile"
-                       OnClick="ImportDomain">Import Domain</MudButton>
+            Color="Color.Secondary"
+            StartIcon="@Icons.Material.Filled.UploadFile"
+            OnClick="ImportDomain">Import Domain</MudButton>
         </MudStack>
     </div>
 
@@ -49,9 +49,24 @@
                         @{
                             var u = context.RedirectUrl ?? string.Empty;
                         }
-                        @(u.Length > 25 ? $"{u.Substring(0, 23)}..." : u)
+                        @($"Redirect: {(u.Length > 25 ? $"{u.Substring(0, 23)}..." : u)}")
                     </MudText>
+                }
+                else if (!string.IsNullOrWhiteSpace(_wildcardHost) &&
+                (!string.IsNullOrWhiteSpace(context.IpnsPeerId) || !string.IsNullOrWhiteSpace(context.IpnsKeyName)))
+                {
 
+                    <MudStack Row="true" Spacing="1" Class="mt-1">
+                        <MudTooltip Text="@($"{GetLabel(context)}.{_wildcardHost}")">
+                            <MudChip T="string" Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Link">
+                                @($"{GetIpnsHost(context, useShort: true)}")
+                            </MudChip>
+                        </MudTooltip>
+
+                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                        Size="Size.Small"
+                                       OnClick="@(() => CopyToClipboard($"{GetLabel(context)}.{_wildcardHost}"))" />
+                    </MudStack>
                 }
             </MudTd>
             <MudTd DataLabel="Use SSL">
@@ -67,7 +82,7 @@
                 @if (!string.IsNullOrWhiteSpace(context.IpnsPeerId))
                 {
                     <MudStack Row="true" Spacing="1" Class="mb-2">
-                     @*    <MudChip T="string" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.VpnKey">
+                        @*    <MudChip T="string" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.VpnKey">
                             @context.IpnsKeyName
                         </MudChip> *@
                         <MudTooltip Text="@context.IpnsPeerId">
@@ -76,32 +91,32 @@
                             </MudChip>
                         </MudTooltip>
                         <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small"
-                                       OnClick="@(() => CopyToClipboard(context.IpnsPeerId))" />
+                        OnClick="@(() => CopyToClipboard(context.IpnsPeerId))" />
                     </MudStack>
                 }
 
-            </MudTd>         
+            </MudTd>
             <MudTd>
                 @if (string.IsNullOrWhiteSpace(context.RedirectUrl))
-                { 
-                   
+                {
+
                     <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.CloudUpload"
-                           OnClick="@(() => PublishDomain(context))">Publish</MudButton>
-                <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined"  StartIcon="@Icons.Material.Filled.Download"
-                            OnClick="@(() => BackupDomain(context))">Backup</MudButton>
+                    OnClick="@(() => PublishDomain(context))">Publish</MudButton>
+                    <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Download"
+                    OnClick="@(() => BackupDomain(context))">Backup</MudButton>
                 }
                 <MudButton Size="Size.Small"
-                           Variant="Variant.Outlined"
-                           StartIcon="@Icons.Material.Filled.Edit"
-                           Class="mr-2"
-                           OnClick="@(() => EditDomain(context))">
+                Variant="Variant.Outlined"
+                StartIcon="@Icons.Material.Filled.Edit"
+                Class="mr-2"
+                OnClick="@(() => EditDomain(context))">
                     Edit
                 </MudButton>
                 <MudButton Size="Size.Small"
-                           Variant="Variant.Outlined"
-                           Color="Color.Error"
-                           StartIcon="@Icons.Material.Filled.DeleteForever"
-                           OnClick="@(() => DeleteDomain(context))">
+                Variant="Variant.Outlined"
+                Color="Color.Error"
+                StartIcon="@Icons.Material.Filled.DeleteForever"
+                OnClick="@(() => DeleteDomain(context))">
                     Delete
                 </MudButton>
             </MudTd>
@@ -115,7 +130,29 @@
 
 @code
 {
+    private string GetLabel(EdgeDomain context)
+    {
+        return !string.IsNullOrWhiteSpace(context.IpnsPeerId)
+                        ? context.IpnsPeerId!
+                        : context.IpnsKeyName!;
+    }
+
+    private string? _wildcardHost; // from Config
     private List<EdgeDomain> _domains = new();
+
+    private string GetIpnsHost(EdgeDomain context, bool useShort = false)
+    {
+        // Prefer PeerId; fallback to KeyName
+        var label = !string.IsNullOrWhiteSpace(context.IpnsPeerId)
+            ? context.IpnsPeerId!
+            : context.IpnsKeyName!;
+
+        if (useShort)
+            return $"{ShortMid(label)}.{_wildcardHost}";
+        else
+            return $"{label}.{_wildcardHost}";
+    }
+
 
     private async Task PublishDomain(EdgeDomain d)
     {
@@ -185,6 +222,8 @@
     {
         var cfg = ConfigSvc.Get();
 
+        _wildcardHost = cfg?.IpnsWildCardSubDomain?.WildCardSubDomain?.Trim();
+
         _domains = (cfg.Domains ?? new List<EdgeDomain>())
             .Where(d => !string.IsNullOrWhiteSpace(d?.Domain))
             .OrderBy(d => d.Domain, StringComparer.OrdinalIgnoreCase)
@@ -193,7 +232,6 @@
                     Domain = (d.Domain ?? string.Empty).Trim(),
                     UseSSL = (d.UseSSL ?? string.Empty).Trim(),
                     RedirectUrl = (d.RedirectUrl ?? string.Empty).Trim(),
-                // 👇 preserve the IPNS-related fields (and a couple of useful ones)
                     IpnsKeyName = d.IpnsKeyName?.Trim(),
                     IpnsPeerId = d.IpnsPeerId?.Trim(),
                     LastPublishedCid = d.LastPublishedCid?.Trim(),
@@ -203,7 +241,8 @@
 
         StateHasChanged();
     }
-
+    private static string ShortMid(string s, int head = 6, int tail = 4)
+       => string.IsNullOrWhiteSpace(s) || s.Length <= head + tail + 1 ? s : $"{s[..head]}…{s[^tail..]}";
     private async Task AddDomain()
     {
         var dialog = Dialogs.Show<AddOrEditDomainDialog>("Add Domain");

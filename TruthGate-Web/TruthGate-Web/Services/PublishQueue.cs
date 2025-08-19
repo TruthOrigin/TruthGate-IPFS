@@ -94,10 +94,7 @@ namespace TruthGate_Web.Services
             await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(tgpJson)))
                 await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/tgp.json", ms, _http, _keys, "application/json", ct);
 
-            // index.html  (NOTE: media type without charset to avoid FormatException)
-            var indexHtml = TgpTemplates.IndexHtml();
-            await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(indexHtml)))
-                await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/index.html", ms, _http, _keys, "text/html", ct);
+
 
             // legal.md    (NOTE: media type without charset to avoid FormatException)
             var legal = TgpTemplates.LegalMd(job.Domain);
@@ -118,6 +115,12 @@ namespace TruthGate_Web.Services
                 : edSnapshot.IpnsKeyName;
 
             var (name, id) = await IpfsAdmin.EnsureKeyAsync(ipnsName, _http, _keys);
+
+            // index.html: pass override base URL (IPNS wildcard if configured, else the domain)
+            var overrideBaseUrl = BuildTgpOverrideBaseUrl(edSnapshot, ipnsPeerId: id);
+            var indexHtml = TgpTemplates.IndexHtml(overrideBaseUrl);
+            await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(indexHtml)))
+                await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/index.html", ms, _http, _keys, "text/html", ct);
 
             // Publish pointer to the TGP bundle
             await IpfsAdmin.NamePublishAsync(name, tgpCid, _http, _keys);
@@ -209,6 +212,53 @@ namespace TruthGate_Web.Services
                 try { using var doc = JsonDocument.Parse(txt); return doc.RootElement.Clone(); } catch { return null; }
             }
         }
+
+        private string BuildTgpOverrideBaseUrl(EdgeDomain ed, string? ipnsPeerId)
+        {
+            // Pull a fresh snapshot to read current wildcard setting safely
+            var cfg = _config.Get();
+            var wc = cfg?.IpnsWildCardSubDomain;
+
+            // Utility: normalize scheme flags like "true"/"false"
+            static bool Boolish(string? s) => bool.TryParse((s ?? "").Trim(), out var b) && b;
+
+            try
+            {
+                // If wildcard is configured, prefer it
+                var wildcardHost = wc?.WildCardSubDomain?.Trim();
+                if (!string.IsNullOrWhiteSpace(wildcardHost))
+                {
+                    // we expect the saved value WITHOUT "*."
+                    // form: <label>.<wildcardHost>
+                    // label preference: PeerId -> KeyName -> fallback to keyname derived from domain
+                    var label =
+                        !string.IsNullOrWhiteSpace(ipnsPeerId) ? ipnsPeerId! :
+                        (!string.IsNullOrWhiteSpace(ed.IpnsKeyName) ? ed.IpnsKeyName! :
+                         $"tg-{IpfsGateway.ToSafeLeaf(ed.Domain)}");
+
+                    // ensure no leading dot on the wildcard host
+                    var host = $"{label}.{wildcardHost.TrimStart('.')}";
+
+                    var scheme = Boolish(wc?.UseSSL) ? "https" : "http";
+                    return $"{scheme}://{host}";
+                }
+
+                // Otherwise, fall back to the primary domain
+                {
+                    var scheme = Boolish(ed.UseSSL) ? "https" : "http";
+                    var host = (ed.Domain ?? string.Empty).Trim();
+                    return $"{scheme}://{host}";
+                }
+            }
+            catch
+            {
+                // Last-resort fallback: domain with https (sensible default)
+                var host = (ed.Domain ?? string.Empty).Trim();
+                var scheme = Boolish(ed.UseSSL) ? "https" : "http";
+                return $"{scheme}://{host}";
+            }
+        }
+
     }
 
 }

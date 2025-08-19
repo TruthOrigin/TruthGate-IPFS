@@ -1,0 +1,125 @@
+﻿@page "/settings"
+@using MudBlazor
+@using TruthGate_Web.Models
+@inject IConfigService ConfigSvc
+@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+
+<MudContainer Class="py-4" MaxWidth="MaxWidth.Medium">
+    <MudText Typo="Typo.h4" Class="mb-2">Settings</MudText>
+
+    <MudPaper Class="p-4" Style="padding:15px;">
+
+        <MudText Typo="Typo.h6" Class="mb-2">IPNS Wildcard Subdomain</MudText>
+
+        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+            Point DNS for both IPv4 and IPv6 to this gateway using a wildcard like <b>*.ipns</b>.
+            Then enter the full host <i>without</i> the "*." here (for example: <code>ipns.truthgate.io</code>).
+        </MudAlert>
+
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="_wildcard"
+                          Label="Wildcard host"
+                          Placeholder="your-subdomain.example.com"
+                          Variant="Variant.Outlined"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Star"
+                          AdornmentText="*."
+                          OnBlur="@NormalizeInput"
+                          HelperText="Stored without “*.”; requests to &lt;peer-or-key&gt;.*.host go through the TGP pointer." />
+
+            <MudSwitch @bind-Value="_useSsl"
+                       Color="Color.Primary"
+                       Label="Use TruthGate-managed SSL (recommended)" />
+
+            <MudExpansionPanels Class="mt-2">
+                <MudExpansionPanel Text="How it works (details)" Dense="true">
+                    <MudText Typo="Typo.body2">
+                        When a request comes to <code>&lt;peer-or-key&gt;.<span>@(_wildcard ?? "…")</span></code>, the gateway looks up a domain
+                        whose <b>IPNS Peer ID</b> or <b>Key Name</b> matches <code>&lt;peer-or-key&gt;</code>. If found, the request is
+                        served from that domain’s <code>/production/pinned/&lt;tgp-leaf&gt;</code> (TruthGate Protocol bundle), which
+                        resolves to the domain’s current site CID via IPNS and emulates the full domain environment. Access is still sandboxed
+                        to that domain’s content; it does not expose other folders or keys.
+                    </MudText>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+
+            <MudDivider Class="my-3" />
+
+            <MudStack Row="true" Spacing="2" Justify="Justify.FlexEnd">
+                <MudButton Variant="Variant.Outlined" Color="Color.Default" OnClick="Reload">Reset</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save">Save</MudButton>
+            </MudStack>
+        </MudStack>
+
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private string? _wildcard; // stored without "*."
+    private bool _useSsl = true;
+
+    protected override void OnInitialized() => Reload();
+
+    private void Reload()
+    {
+        var cfg = ConfigSvc.Get();
+        _wildcard = cfg?.IpnsWildCardSubDomain?.WildCardSubDomain?.Trim() ?? "";
+        _useSsl = string.Equals(cfg?.IpnsWildCardSubDomain?.UseSSL, "true", StringComparison.OrdinalIgnoreCase);
+        StateHasChanged();
+    }
+
+    private void NormalizeInput()
+    {
+        if (string.IsNullOrWhiteSpace(_wildcard)) return;
+        var s = _wildcard.Trim();
+        if (s.StartsWith("*.", StringComparison.Ordinal))
+            s = s[2..];
+        _wildcard = NormalizeHostLike(s);
+    }
+
+    private async Task Save()
+    {
+        NormalizeInput();
+
+        await ConfigSvc.UpdateAsync(cfg =>
+        {
+            cfg.IpnsWildCardSubDomain ??= new IpnsWildCardSubDomain();
+            cfg.IpnsWildCardSubDomain.WildCardSubDomain = _wildcard ?? "";
+            cfg.IpnsWildCardSubDomain.UseSSL = _useSsl ? "true" : "false";
+        });
+
+        Snackbar.Add("Settings saved.", Severity.Success);
+        Reload();
+    }
+
+    // lenient host-ish normalizer; keeps ASCII/punycode allowed chars and trims trailing dot
+    private static string NormalizeHostLike(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input)) return "";
+        var s = input.Trim();
+
+        // If user pasted a URL, strip to host
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Uri.TryCreate(s, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
+                s = uri.Host;
+        }
+
+        // cut off any path/port
+        var slash = s.IndexOf('/');
+        if (slash >= 0) s = s[..slash];
+        var colon = s.IndexOf(':');
+        if (colon >= 0) s = s[..colon];
+
+        s = s.Trim().TrimEnd('.').ToLowerInvariant();
+        // VERY light validation – allow a-z0-9.- and require at least one dot
+        if (!System.Text.RegularExpressions.Regex.IsMatch(s, @"^[a-z0-9.-]+$")) return "";
+        if (s.Contains("..")) return "";
+        var parts = s.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2) return "";
+
+        return s;
+    }
+}
