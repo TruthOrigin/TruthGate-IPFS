@@ -25,13 +25,20 @@ namespace TruthGate_Web.Utils
   const OVERRIDE = {(overrideUrl is null ? "null" : $"'{overrideUrl.Replace("'", "\\'")}'")};
   const REDIRECT_DOC = 'QmRAy95PUSX58yNRLh5grYuz3x5JLwmF4UqJnBtQeqZK4u';
 
-  // --- 0) IPFS presence detection: if true => forbid override (avoid collisions)
+  // --- 0) IPFS presence/context detection
+  function isIpfsLikeHost(host) {{
+    return /\.ipns\./.test(host) || /\.ipfs\./.test(host);
+  }}
+
   function ipfsDetected() {{
     try {{
+      // If our OUTER page is on an ipns/ipfs subdomain, treat as IPFS context.
+      if (isIpfsLikeHost(location.hostname)) return true;
+
       if (typeof window.ipfs !== 'undefined') return true;
       if (typeof window.ipfsCompanion !== 'undefined') return true;
 
-      // Heuristic: same-origin SW is controlling an /ipfs/ or /ipns/ path
+      // Heuristic: same-origin SW controlling an IPFS-ish path
       const looksIpfsPath = /\/(ipfs|ipns)\//.test(location.pathname);
       if (navigator.serviceWorker && navigator.serviceWorker.controller && looksIpfsPath) return true;
     }} catch (e) {{}}
@@ -54,33 +61,36 @@ namespace TruthGate_Web.Utils
     }}
   }}
 
-  // Utility: mount single fullscreen iframe
   function mountFrame(src) {{
     const f = document.createElement('iframe');
     f.id = 'tg-frame';
     f.src = src;
     f.referrerPolicy = 'no-referrer';
     f.setAttribute('loading', 'eager');
-    // Expand sandbox if inner app needs forms/downloads/storage
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin');
     document.body.replaceChildren(f);
   }}
 
-  // --- 1) If override provided AND not forbidden by IPFS detection, try it FIRST
+  // --- 1) Try override FIRST only if:
+  //   - provided,
+  //   - NOT forbidden by IPFS detection,
+  //   - and the override host itself is NOT an ipns/ipfs host (avoid Companion rewrites).
   if (OVERRIDE && !forbidOverride) {{
     try {{
       const u = new URL(OVERRIDE, location.href);
-      const endsWithSlash = u.pathname.endsWith('/');
-      const probeUrl = endsWithSlash ? new URL('index.html', u).toString() : u.toString();
-      const altProbe = !endsWithSlash ? new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString() : null;
+      if (!isIpfsLikeHost(u.hostname)) {{
+        const endsWithSlash = u.pathname.endsWith('/');
+        const probeUrl = endsWithSlash ? new URL('index.html', u).toString() : u.toString();
+        const altProbe = !endsWithSlash ? new URL(u.pathname.replace(/\/?$/, '/index.html'), u).toString() : null;
 
-      if (await isLiveHead(probeUrl) || (altProbe && await isLiveHead(altProbe))) {{
-        // Use override EXACTLY as provided (no query params added)
-        mountFrame(u.toString());
-        return;
+        if (await isLiveHead(probeUrl) || (altProbe && await isLiveHead(altProbe))) {{
+          // Use override EXACTLY as provided (no query params)
+          mountFrame(u.toString());
+          return;
+        }}
       }}
+      // else: override host is ipns/ipfs → skip override to avoid Companion rewrites
     }} catch (e) {{}}
-    // If probe fails, fall through to TGP→dweb
   }}
 
   // --- 2) Resolve via TGP (root → sibling → relative), then dweb redirect doc
@@ -125,6 +135,7 @@ namespace TruthGate_Web.Utils
 }})();
 </script>
 <body></body>";
+
 
 
 
