@@ -30,7 +30,7 @@
 
     <MudPaper Class="pa-4 mb-4">
         <MudText Typo="Typo.h6">Summary</MudText>
-       @*  <MudText>
+        @*  <MudText>
             <b>@_totalRecursivePins</b> recursive pins on this node.
         </MudText> *@
         <MudText>
@@ -49,7 +49,7 @@
                           AdornmentIcon="@Icons.Material.Filled.Search"
                           Class="w-full md:w-96" />
             <MudSpacer />
-            <MudButton Variant="Variant.Outlined"
+            <MudButton Variant="Variant.Outlined" Style="margin-right:15px;"
                        StartIcon="@Icons.Material.Filled.PlayArrow"
                        OnClick="@(() => RunAllNow())">
                 Update All Now
@@ -117,8 +117,8 @@
                         else if (!string.IsNullOrWhiteSpace(context.LatestCid))
                         {
                             <MudStack Row="true" AlignItems="AlignItems.Center">
-                               @*  <MudText Class="break-all truncate-text">@context.LatestCid</MudText> *@
-                                
+                                @*  <MudText Class="break-all truncate-text">@context.LatestCid</MudText> *@
+
                                 <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.NewReleases">
                                     Update available
                                 </MudChip>
@@ -139,54 +139,6 @@
                     <MudText Color="Color.Primary">—</MudText>
                 }
             </MudTd>
-
-@* 
-            <MudTd>
-                @if (!string.IsNullOrWhiteSpace(context.LatestCid))
-                {
-                    <MudStack Row="true" AlignItems="AlignItems.Center">
-                        <MudText Class="break-all truncate-text">@context.LatestCid</MudText>
-                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
-                                       Size="Size.Small"
-                                       OnClick="@(() => Copy(context.LatestCid!))" />
-                    </MudStack>
-                }
-                else if (context.ResolveError is not null)
-                {
-                    <MudTooltip Text="@context.ResolveError">
-                        <MudChip T="string" Color="Color.Error" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.ErrorOutline">
-                            Resolve Failed
-                        </MudChip>
-                    </MudTooltip>
-                }
-                else
-                {
-                    <MudProgressCircular Indeterminate="true" Size="Size.Small" />
-                }
-            </MudTd>
-
-            <MudTd>
-                @if (context.ResolveError is not null)
-                {
-                    <MudText Color="Color.Error">Error</MudText>
-                }
-                else if (context.LatestCid == context.CurrentCid && !string.IsNullOrWhiteSpace(context.CurrentCid))
-                {
-                    <MudChip T="string" Color="Color.Success" Variant="Variant.Filled" Icon="@Icons.Material.Filled.CheckCircle">
-                        Up to date
-                    </MudChip>
-                }
-                else if (!string.IsNullOrWhiteSpace(context.LatestCid))
-                {
-                    <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.NewReleases">
-                        Update available
-                    </MudChip>
-                }
-                else
-                {
-                    <MudText>—</MudText>
-                }
-            </MudTd> *@
 
             <MudTd>
                 @if (context.AutoUpdate)
@@ -212,29 +164,28 @@
 
 
             <MudTd>
-                <MudButton Size="Size.Small"
-                           Variant="Variant.Text"
-                           StartIcon="@Icons.Material.Filled.Edit"
-                           OnClick="@(() => OnEditIpns(context))">
-                    Edit
-                </MudButton>
+                <MudStack Row="true">
+                    <MudTooltip Text="Edit">
+                        <MudIconButton Size="Size.Small" Style="margin-right:2px;"
+                                       Variant="Variant.Outlined"
+                                       Icon="@Icons.Material.Filled.Edit"
+                                       OnClick="@(() => OnEditIpns(context))" />
+                    </MudTooltip>
 
-                <MudButton Size="Size.Small"
-                           Variant="Variant.Text"
-                           StartIcon="@Icons.Material.Filled.PlayArrow"
-                           Disabled="@(context.ResolveError is not null)"
-                           OnClick="@(() => RunOneNow(context.Name))">
-                    Update Now
-                </MudButton>
-
-                <MudButton Size="Size.Small"
-                           Variant="Variant.Text"
-                           Color="Color.Error"
-                           StartIcon="@Icons.Material.Filled.DeleteForever"
-                           Class="ml-2"
-                           OnClick="@(() => DeleteIpns(context))">
-                    Remove
-                </MudButton>
+                    <MudTooltip Text="Update Now">
+                        <MudIconButton Size="Size.Small" Style="margin-right:2px;"
+                                       Variant="Variant.Outlined"
+                                       Icon="@Icons.Material.Filled.PlayArrow"
+                                       OnClick="@(() => RunOneNow(context.Name))" />
+                    </MudTooltip>
+                    <MudTooltip Text="Remove">
+                        <MudIconButton Size="Size.Small" Style="margin-right:2px;"
+                                       Variant="Variant.Outlined"
+                                       Icon="@Icons.Material.Filled.DeleteForever"
+                                       Color="Color.Error"
+                                       OnClick="@(() => DeleteIpns(context))" />
+                    </MudTooltip>
+                </MudStack>
             </MudTd>
         </RowTemplate>
 

@@ -22,16 +22,16 @@
 
         <MudStack Spacing="2" Row="true">
             <MudButton Variant="Variant.Filled"
-            Color="Color.Primary"
-            StartIcon="@Icons.Material.Filled.DomainAdd"
-            OnClick="AddDomain">
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.DomainAdd"
+                       OnClick="AddDomain">
                 Add Domain
             </MudButton>
 
             <MudButton Variant="Variant.Filled"
-            Color="Color.Secondary"
-            StartIcon="@Icons.Material.Filled.UploadFile"
-            OnClick="ImportDomain">Import Domain</MudButton>
+                       Color="Color.Secondary"
+                       StartIcon="@Icons.Material.Filled.UploadFile"
+                       OnClick="ImportDomain">Import Domain</MudButton>
         </MudStack>
     </div>
 
@@ -66,7 +66,7 @@
                         </MudTooltip>
 
                         <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
-                        Size="Size.Small"
+                                       Size="Size.Small"
                                        OnClick="@(() => CopyToClipboard($"https://{GetLabel(context)}.{_wildcardHost}"))" />
                     </MudStack>
                 }
@@ -93,7 +93,7 @@
                             </MudChip>
                         </MudTooltip>
                         <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small"
-                        OnClick="@(() => CopyToClipboard(context.IpnsPeerId))" />
+                                       OnClick="@(() => CopyToClipboard(context.IpnsPeerId))" />
                     </MudStack>
                 }
 
@@ -101,26 +101,35 @@
             <MudTd>
                 @if (string.IsNullOrWhiteSpace(context.RedirectUrl))
                 {
+                    <MudTooltip Text="Publish">
+                        <MudIconButton Size="Size.Small" Style="margin-right:5px;"
+                                       Variant="Variant.Outlined"
+                                       Icon="@Icons.Material.Filled.CloudUpload"
+                                       OnClick="@(() => PublishDomain(context))" />
+                    </MudTooltip>
 
-                    <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.CloudUpload"
-                    OnClick="@(() => PublishDomain(context))">Publish</MudButton>
-                    <MudButton Class="mr-2" Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Download"
-                    OnClick="@(() => BackupDomain(context))">Backup</MudButton>
+                    <MudTooltip Text="Backup">
+                        <MudIconButton Size="Size.Small" Style="margin-right:5px;"
+                                       Variant="Variant.Outlined"
+                                       Icon="@Icons.Material.Filled.Download"
+                                       OnClick="@(() => BackupDomain(context))" />
+                    </MudTooltip>
                 }
-                <MudButton Size="Size.Small"
-                Variant="Variant.Outlined"
-                StartIcon="@Icons.Material.Filled.Edit"
-                Class="mr-2"
-                OnClick="@(() => EditDomain(context))">
-                    Edit
-                </MudButton>
-                <MudButton Size="Size.Small"
-                Variant="Variant.Outlined"
-                Color="Color.Error"
-                StartIcon="@Icons.Material.Filled.DeleteForever"
-                OnClick="@(() => DeleteDomain(context))">
-                    Delete
-                </MudButton>
+               
+                <MudTooltip Text="Edit">
+                    <MudIconButton Size="Size.Small" Style="margin-right:2px;"
+                                   Variant="Variant.Outlined"
+                                   Icon="@Icons.Material.Filled.Edit"
+                                   OnClick="@(() => EditDomain(context))" />
+                </MudTooltip>
+
+                <MudTooltip Text="Delete">
+                    <MudIconButton Size="Size.Small"
+                                   Variant="Variant.Outlined"
+                                   Color="Color.Error"
+                                   Icon="@Icons.Material.Filled.DeleteForever"
+                                   OnClick="@(() => DeleteDomain(context))" />
+                </MudTooltip>
             </MudTd>
         </RowTemplate>
 
