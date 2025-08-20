@@ -171,12 +171,74 @@ fi
 # =========================
 # Publish
 # =========================
+# keep your existing line:
 SC_ARG="--self-contained ${SELF_CONTAINED}"
+
 echo "[dotnet] publish ..."
-dotnet publish "$SERVER_CSPROJ" \
+mkdir -p "$PUB" || true
+
+# --- attempt 1: your original command as-is -------------------------------
+if dotnet publish "$SERVER_CSPROJ" \
   -c Release -r "$RID" $SC_ARG \
   -p:WasmBuildNative="$WASM_NATIVE" \
-  -o "$PUB"
+  -o "$PUB"; then
+  echo "[dotnet] publish OK (attempt 1: original)"
+  exit 0
+fi
+
+# --- attempt 2: fix PATH + use absolute dotnet ----------------------------
+export DOTNET_ROOT="/usr/share/dotnet"
+export PATH="/usr/share/dotnet:$PATH"
+DOTNET="/usr/share/dotnet/dotnet"
+
+if "$DOTNET" publish "$SERVER_CSPROJ" \
+  -c Release -r "${RID:-linux-arm64}" $SC_ARG \
+  -p:WasmBuildNative="${WASM_NATIVE:-false}" \
+  -o "$PUB"; then
+  echo "[dotnet] publish OK (attempt 2: absolute dotnet + env)"
+  exit 0
+fi
+
+# --- attempt 3: remove WasmBuildNative (workload-specific) ----------------
+if "$DOTNET" publish "$SERVER_CSPROJ" \
+  -c Release -r "${RID:-linux-arm64}" $SC_ARG \
+  -o "$PUB"; then
+  echo "[dotnet] publish OK (attempt 3: no WasmBuildNative)"
+  exit 0
+fi
+
+# --- attempt 4: framework-dependent fallback (no RID, not self-contained) -
+# Good when RID/self-contained combo is causing issues.
+if "$DOTNET" publish "$SERVER_CSPROJ" \
+  -c Release --self-contained false \
+  -o "$PUB"; then
+  echo "[dotnet] publish OK (attempt 4: no RID, framework-dependent)"
+  exit 0
+fi
+
+# --- attempt 5: explicit restore/build then publish -----------------------
+if "$DOTNET" restore "$SERVER_CSPROJ" && \
+   "$DOTNET" build   "$SERVER_CSPROJ" -c Release && \
+   "$DOTNET" publish "$SERVER_CSPROJ" -c Release -o "$PUB"; then
+  echo "[dotnet] publish OK (attempt 5: restore/build/publish)"
+  exit 0
+fi
+
+# --- diagnostics -----------------------------------------------------------
+echo "[dotnet] publish FAILED after all attempts"
+echo "Diagnostics:"
+echo "  SERVER_CSPROJ: ${SERVER_CSPROJ}"
+echo "  RID:           ${RID}"
+echo "  SELF_CONTAINED:${SELF_CONTAINED}"
+echo "  WASM_NATIVE:   ${WASM_NATIVE}"
+echo "  PUB:           ${PUB}"
+echo "  PATH:          ${PATH}"
+echo "  DOTNET_ROOT:   ${DOTNET_ROOT}"
+"$DOTNET" --info || true
+"$DOTNET" --list-sdks || true
+"$DOTNET" --list-runtimes || true
+exit 1
+
 
 # =========================
 # Run
