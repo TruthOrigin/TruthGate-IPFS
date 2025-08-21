@@ -7,7 +7,7 @@
     <MudText Typo="Typo.h3" Align="Align.Center">Dashboard</MudText>
     <br />
 
-    <MudGrid Justify="Justify.Center">        
+    <MudGrid>        
 
         <MudItem xs="6" sm="4" md="3">
             <DynamicDashboardCard T="VersionResponse"
@@ -54,7 +54,11 @@
                                   ValueSelector="@(x =>
                               $"\u2193 {UiFormat.BytesPerSec(x.RateIn)} <br />  \u2191 {UiFormat.BytesPerSec(x.RateOut)}")" />
         </MudItem>
-    
+
+
+
+        <DashboardMetrics />
+
     </MudGrid>
 </MudContainer>
 

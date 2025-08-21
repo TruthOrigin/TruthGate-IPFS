@@ -1,0 +1,351 @@
+﻿@using System.Globalization
+@using MudBlazor
+@using TruthGate_Web.Models.Metrics   @* MetricPoint, MetricSnapshot, ThreadSpike *@
+@inject IMetricService Metrics
+@implements IDisposable
+@rendermode InteractiveServer
+
+
+
+<!-- Header / Now cards + mode + knobs -->
+<MudPaper Class="p-4" Style="padding:15px; margin-top:25px; margin-bottom:25px; width:100%;">
+
+    <MudText Typo="Typo.h5">Environment vs Process - Rolling</MudText>
+
+
+
+    <div class="flex items-center gap-6" style="padding:15px;">
+
+        <MudGrid>
+            <MudItem xs="6" sm="4" md="2">
+                <MudText Class="opacity-70" Typo="Typo.caption">CPU · System</MudText>
+                <MudText Typo="Typo.h6">@_nowSysCpu.ToString("0.0")%</MudText>
+            </MudItem>
+            <MudItem xs="6" sm="4" md="2">
+                <MudText Class="opacity-70" Typo="Typo.caption">CPU · Process</MudText>
+                <MudText Typo="Typo.h6">@_nowProcCpu.ToString("0.0")%</MudText>
+            </MudItem>
+            <MudItem xs="6" sm="4" md="3">
+                <MudText Class="opacity-70" Typo="Typo.caption">RAM · System</MudText>
+                <MudText Typo="Typo.h6">@_nowSysUsedGB.ToString("0.00") / @_nowSysTotalGB.ToString("0.00") GB</MudText>
+            </MudItem>
+            <MudItem xs="6" sm="4" md="3">
+                <MudText Class="opacity-70" Typo="Typo.caption">RAM · Process (WS)</MudText>
+                <MudText Typo="Typo.h6">@_nowProcWsMB.ToString("0") MB</MudText>
+            </MudItem>
+            <MudItem xs="6" sm="4" md="2">
+                <MudText Class="opacity-70" Typo="Typo.caption">Proc Threads</MudText>
+                <MudText Typo="Typo.h6">@_nowProcThreads</MudText>
+            </MudItem>
+        </MudGrid>
+
+        <MudText>The "Process" is the TruthGate running process specifically.</MudText>
+    </div>
+
+    <hr class="mud-divider mud-divider-fullwidth my-8">
+
+    <div class="flex items-center gap-4">
+        <MudSwitch @bind-Value="_isDetailed">Detailed</MudSwitch>
+        <MudText>Detailed shows the last 30 seconds. Non detailed shows the highest spike per minute in the past 10 minutes</MudText>
+        @* 
+                <!-- Summary bucket in seconds (default 60 = 1 minute) -->
+                <MudNumericField T="int" @bind-Value="_summaryBucketSeconds"
+                                 Label="Summary Bucket (s)"
+                                 Variant="Variant.Outlined"
+                                 Margin="Margin.Dense"
+                                 Min="10" Max="300" Immediate="true" Style="width:170px" />
+
+                <!-- Detailed window length (seconds) -->
+                <MudNumericField T="int" @bind-Value="_detailedWindowSeconds"
+                                 Label="Detailed Window (s)"
+                                 Variant="Variant.Outlined"
+                                 Margin="Margin.Dense"
+                                 Min="5" Max="120" Immediate="true" Style="width:185px" />
+
+                <MudSwitch @bind-Value="_rotateXLabels">Rotate X labels</MudSwitch> *@
+    </div>
+
+
+</MudPaper>
+
+<!-- Charts -->
+<MudGrid>
+
+    <!-- CPU: System vs Process -->
+    <MudItem xs="12" md="6">
+        <MudPaper Class="p-4 h-full" Style="height:400px; padding:15px;">
+            <MudText Typo="Typo.subtitle1">CPU % (System vs Process)</MudText>
+            <MudChart ChartType="ChartType.Line"
+                      ChartSeries="@_cpuSeries"
+                      XAxisLabels="@_xLabels"
+                      Width="100%"
+                      Height="300"
+                      AxisChartOptions="@_axisOptions"
+                      ChartOptions="@_chartOptions" />
+        </MudPaper>
+    </MudItem>
+
+    <!-- System Memory (GB) -->
+    <MudItem xs="12" md="6">
+        <MudPaper Class="p-4 h-full" Style="height:400px; padding:15px;">
+            <MudText Typo="Typo.subtitle1">System Memory Used (GB)</MudText>
+            <MudChart ChartType="ChartType.Line"
+                      ChartSeries="@_sysMemSeries"
+                      XAxisLabels="@_xLabels"
+                      Width="100%"
+                      Height="300"
+                      AxisChartOptions="@_axisOptions"
+                      ChartOptions="@_chartOptions" />
+        </MudPaper>
+    </MudItem>
+
+    <!-- Process Memory (MB) -->
+    <MudItem xs="12" md="6">
+        <MudPaper Class="p-4 h-full" Style="height:400px; padding:15px;">
+            <MudText Typo="Typo.subtitle1">Process Memory (MB) · Working Set & GC Heap</MudText>
+            <MudChart ChartType="ChartType.Line"
+                      ChartSeries="@_procMemSeries"
+                      XAxisLabels="@_xLabels"
+                      Width="100%"
+                      Height="300"
+                      AxisChartOptions="@_axisOptions"
+                      ChartOptions="@_chartOptions" />
+        </MudPaper>
+    </MudItem>
+
+    <!-- ThreadPool -->
+    <MudItem xs="12" md="6">
+        <MudPaper Class="p-4 h-full" Style="height:400px; padding:15px;">
+            <MudText Typo="Typo.subtitle1">ThreadPool · Threads & Queue</MudText>
+            <MudChart ChartType="ChartType.Line"
+                      ChartSeries="@_tpSeries"
+                      XAxisLabels="@_xLabels"
+                      Width="100%"
+                      Height="300"
+                      AxisChartOptions="@_axisOptions"
+                      ChartOptions="@_chartOptions" />
+            <MudText Class="opacity-70" Typo="Typo.caption">Series: Threads, Queue Length</MudText>
+        </MudPaper>
+    </MudItem>
+
+</MudGrid>
+
+@if (_topThreads is not null && _topThreads.Count > 0)
+{
+    <MudPaper Class="p-4">
+        <div class="flex items-center justify-between">
+            <MudText Typo="Typo.subtitle1">Top Per-Thread CPU (Linux-only)</MudText>
+            <MudText Class="opacity-70" Typo="Typo.caption">Instantaneous (last tick)</MudText>
+        </div>
+        <MudTable Items="@_topThreads" Dense="true" Hover="true">
+            <HeaderContent>
+                <MudTh>TID</MudTh>
+                <MudTh>CPU %</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="TID">@context.Tid</MudTd>
+                <MudTd DataLabel="CPU %">@context.CpuPercent.ToString("0.00")</MudTd>
+            </RowTemplate>
+        </MudTable>
+    </MudPaper>
+}
+
+@code {
+    // ===== Mode knobs =====
+    private bool _isDetailed = true;         // false = Summary (10m buckets), true = Detailed
+    private int _summaryBucketSeconds = 60;  // Summary: 60s (1 minute) default
+    private int _detailedWindowSeconds = 30; // Detailed: last 30s
+    private bool _rotateXLabels = true;
+
+    // ===== Axis cosmetics =====
+    private readonly AxisChartOptions _axisOptions = new()
+        {
+            MatchBoundsToSize = true,
+            XAxisLabelRotation = 45
+        };
+    private readonly ChartOptions _chartOptions = new()
+        {
+            YAxisTicks = 8
+        };
+
+    // ===== Series & labels =====
+    private string[] _xLabels = Array.Empty<string>();
+
+    private readonly List<ChartSeries> _cpuSeries = new()
+    {
+        new ChartSeries { Name = "System CPU %",  Data = Array.Empty<double>() },
+        new ChartSeries { Name = "Process CPU %", Data = Array.Empty<double>() }
+    };
+    private readonly List<ChartSeries> _sysMemSeries = new()
+    {
+        new ChartSeries { Name = "System Used (GB)", Data = Array.Empty<double>() }
+    };
+    private readonly List<ChartSeries> _procMemSeries = new()
+    {
+        new ChartSeries { Name = "Working Set (MB)", Data = Array.Empty<double>() },
+        new ChartSeries { Name = "GC Heap (MB)",     Data = Array.Empty<double>() }
+    };
+    private readonly List<ChartSeries> _tpSeries = new()
+    {
+        new ChartSeries { Name = "Threads",      Data = Array.Empty<double>() },
+        new ChartSeries { Name = "Queue Length", Data = Array.Empty<double>() }
+    };
+
+    // ===== Now-cards =====
+    private double _nowSysCpu, _nowProcCpu;
+    private double _nowSysUsedGB, _nowSysTotalGB, _nowProcWsMB;
+    private int _nowProcThreads;
+    private IReadOnlyList<ThreadSpike>? _topThreads;
+
+    // ===== Loop =====
+    private readonly CancellationTokenSource _cts = new();
+    private PeriodicTimer? _timer;
+    private const int RefreshMs = 1000;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(RefreshMs));
+        _ = Task.Run(UpdateLoopAsync);
+    }
+
+    private async Task UpdateLoopAsync()
+    {
+        try
+        {
+            while (await _timer!.WaitForNextTickAsync(_cts.Token))
+            {
+                _axisOptions.XAxisLabelRotation = _rotateXLabels ? 45 : 0;
+                RebuildSeries();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Console.Error.WriteLine($"Metrics dashboard error: {ex}"); }
+    }
+
+    private void RebuildSeries()
+    {
+        var snap = Metrics.GetSnapshot();
+        var pts = snap.Points;
+
+        // Now-cards
+        if (pts.Count > 0)
+        {
+            var last = pts[^1];
+            _nowSysCpu = last.SysCpuPct;
+            _nowProcCpu = last.ProcCpuPct;
+            _nowSysUsedGB = last.SysMemUsedMB / 1024.0;
+            _nowSysTotalGB = last.SysMemTotalMB / 1024.0;
+            _nowProcWsMB = last.ProcWorkingSetMB;
+            _nowProcThreads = last.ProcThreads;
+            _topThreads = snap.TopThreads;
+        }
+
+        // Window: Detailed (last N seconds @ 1s) or Summary (10m, max-per-bucket, minute default)
+        IReadOnlyList<MetricPoint> window =
+            _isDetailed
+                ? SliceDetailed(pts, _detailedWindowSeconds)
+                : AggregateSummary(pts, _summaryBucketSeconds);
+
+        // Labels
+        _xLabels = BuildLabels(window, _isDetailed);
+
+        // Series fill
+        _cpuSeries[0].Data = window.Select(p => p.SysCpuPct).ToArray();
+        _cpuSeries[1].Data = window.Select(p => p.ProcCpuPct).ToArray();
+
+        _sysMemSeries[0].Data = window.Select(p => p.SysMemUsedMB / 1024.0).ToArray();
+
+        _procMemSeries[0].Data = window.Select(p => p.ProcWorkingSetMB).ToArray();
+        _procMemSeries[1].Data = window.Select(p => p.ProcGcHeapMB).ToArray();
+
+        _tpSeries[0].Data = window.Select(p => (double)p.ThreadPoolThreads).ToArray();
+        _tpSeries[1].Data = window.Select(p => (double)p.ThreadPoolQueueLength).ToArray();
+    }
+
+    private static IReadOnlyList<MetricPoint> SliceDetailed(IReadOnlyList<MetricPoint> pts, int windowSeconds)
+    {
+        if (pts.Count == 0) return Array.Empty<MetricPoint>();
+        if (windowSeconds < 1) windowSeconds = 1;
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromSeconds(windowSeconds);
+        return pts.Where(p => p.Ts >= cutoff).ToList();
+    }
+
+    private static IReadOnlyList<MetricPoint> AggregateSummary(IReadOnlyList<MetricPoint> pts, int bucketSeconds)
+    {
+        if (pts.Count == 0) return Array.Empty<MetricPoint>();
+        if (bucketSeconds < 2) bucketSeconds = 2;
+
+        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(10);
+        long bucketTicks = TimeSpan.FromSeconds(bucketSeconds).Ticks;
+
+        var buckets = new Dictionary<long, MetricPoint>();
+        foreach (var p in pts)
+        {
+            if (p.Ts < cutoff) continue;
+
+            long t0 = p.Ts.Ticks - (p.Ts.Ticks % bucketTicks); // align to bucket start
+            if (!buckets.TryGetValue(t0, out var cur))
+            {
+                // first in bucket
+                buckets[t0] = new MetricPoint(
+                    Ts: new DateTimeOffset(t0, TimeSpan.Zero),
+                    ProcCpuPct: p.ProcCpuPct,
+                    ProcWorkingSetMB: p.ProcWorkingSetMB,
+                    ProcGcHeapMB: p.ProcGcHeapMB,
+                    ProcThreads: p.ProcThreads,
+                    ThreadPoolThreads: p.ThreadPoolThreads,
+                    ThreadPoolQueueLength: p.ThreadPoolQueueLength,
+                    SysCpuPct: p.SysCpuPct,
+                    SysMemUsedMB: p.SysMemUsedMB,
+                    SysMemTotalMB: p.SysMemTotalMB
+                );
+            }
+            else
+            {
+                // keep max in each bucket so spikes survive aggregation
+                buckets[t0] = new MetricPoint(
+                    Ts: new DateTimeOffset(t0, TimeSpan.Zero),
+                    ProcCpuPct: Math.Max(cur.ProcCpuPct, p.ProcCpuPct),
+                    ProcWorkingSetMB: Math.Max(cur.ProcWorkingSetMB, p.ProcWorkingSetMB),
+                    ProcGcHeapMB: Math.Max(cur.ProcGcHeapMB, p.ProcGcHeapMB),
+                    ProcThreads: Math.Max(cur.ProcThreads, p.ProcThreads),
+                    ThreadPoolThreads: Math.Max(cur.ThreadPoolThreads, p.ThreadPoolThreads),
+                    ThreadPoolQueueLength: Math.Max(cur.ThreadPoolQueueLength, p.ThreadPoolQueueLength),
+                    SysCpuPct: Math.Max(cur.SysCpuPct, p.SysCpuPct),
+                    SysMemUsedMB: Math.Max(cur.SysMemUsedMB, p.SysMemUsedMB),
+                    SysMemTotalMB: Math.Max(cur.SysMemTotalMB, p.SysMemTotalMB)
+                );
+            }
+        }
+
+        return buckets.OrderBy(kv => kv.Key)
+                      .Select(kv => kv.Value)
+                      .ToList();
+    }
+
+    private string[] BuildLabels(IReadOnlyList<MetricPoint> window, bool detailed)
+    {
+        if (window.Count == 0) return Array.Empty<string>();
+
+        // Detailed: mm:ss (short). Summary: HH:mm (no seconds).
+        var format = detailed ? "mm':'ss" : "HH':'mm";
+        var labels = window.Select(p => p.Ts.ToLocalTime().ToString(format)).ToArray();
+
+        // Thin to ~7 visible labels max
+        int target = 7;
+        int every = Math.Max(1, labels.Length / target);
+        for (int i = 0; i < labels.Length; i++)
+            if (i % every != 0) labels[i] = string.Empty;
+
+        return labels;
+    }
+
+    public void Dispose()
+    {
+        try { _cts.Cancel(); } catch { }
+        _timer?.Dispose();
+        _cts.Dispose();
+    }
+}

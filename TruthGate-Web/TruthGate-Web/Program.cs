@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Https;
 using TruthGate_Web.Models;
 using TruthGate_Web.Interfaces;
 using Microsoft.AspNetCore.Http.Features;
+using TruthGate_Web.Models.Metrics;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -58,6 +59,18 @@ builder.Services.AddHostedService(sp => (IpnsUpdateWorker)sp.GetRequiredService<
 
 builder.Services.AddSingleton<IPublishQueue, PublishQueue>();
 builder.Services.AddHostedService(sp => (PublishQueue)sp.GetRequiredService<IPublishQueue>());
+
+// Program.cs
+builder.Services.Configure<MetricsOptions>(cfg =>
+{
+    cfg.SampleMs = 1000;
+    cfg.WindowSeconds = 600;
+    cfg.EnablePerThreadLinux = false; // flip true if you want Linux per-thread spikes
+    cfg.MaxPerThread = 5;
+});
+
+builder.Services.AddSingleton<IMetricService, MetricService>();
+builder.Services.AddHostedService(sp => (MetricService)sp.GetRequiredService<IMetricService>());
 
 
 builder.Services.AddMudServices();
