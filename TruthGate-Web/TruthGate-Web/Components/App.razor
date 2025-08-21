@@ -36,6 +36,137 @@
         };
     </script>
 
+    <script>
+        window.TruthGateUpload = (function () {
+
+          function enableDirectory(inputEl) {
+            if (!inputEl) return;
+            inputEl.setAttribute('webkitdirectory', '');
+            inputEl.setAttribute('directory', '');
+            inputEl.setAttribute('multiple', ''); // folder select
+          }
+
+          function addHover(el, dotnet) {
+            const enter = e => { e.preventDefault(); el.classList.add('active'); dotnet.invokeMethodAsync('ReceiveDropState', 'enter'); };
+            const over  = e => { e.preventDefault(); };
+            const leave = e => { el.classList.remove('active'); dotnet.invokeMethodAsync('ReceiveDropState', 'leave'); };
+            el.addEventListener('dragenter', enter);
+            el.addEventListener('dragover',  over);
+            el.addEventListener('dragleave', leave);
+            el.__tgHoverHandlers = { enter, over, leave };
+          }
+
+          function removeHover(el) {
+            if (!el.__tgHoverHandlers) return;
+            const { enter, over, leave } = el.__tgHoverHandlers;
+            el.removeEventListener('dragenter', enter);
+            el.removeEventListener('dragover',  over);
+            el.removeEventListener('dragleave', leave);
+            delete el.__tgHoverHandlers;
+          }
+
+          async function enumerateDataTransfer(dt) {
+            const out = [];
+            const queue = [];
+
+            if (dt.items && dt.items.length && dt.items[0].webkitGetAsEntry) {
+              for (const it of dt.items) {
+                const entry = it.webkitGetAsEntry();
+                if (entry) queue.push({ entry, path: "" });
+              }
+              while (queue.length) {
+                const { entry, path } = queue.shift();
+                if (entry.isFile) {
+                  const file = await new Promise(res => entry.file(res));
+                  out.push({ file, relPath: path + entry.name });
+                } else if (entry.isDirectory) {
+                  const reader = entry.createReader();
+                  await new Promise(done => {
+                    const read = () => reader.readEntries(entries => {
+                      if (!entries.length) return done();
+                      for (const e of entries) queue.push({ entry: e, path: path + entry.name + "/" });
+                      read();
+                    });
+                    read();
+                  });
+                }
+              }
+            } else {
+              for (const f of dt.files) out.push({ file: f, relPath: f.name });
+            }
+            return out;
+          }
+
+          async function onDrop(e, dotnet) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('active');
+            dotnet.invokeMethodAsync('ReceiveDropState', 'leave');
+
+            const files = await enumerateDataTransfer(e.dataTransfer);
+            const payload = files
+              .filter(({ file }) => file && file.size > 0) // ← skip zero-byte
+              .map(({ file, relPath }) => ({
+                StreamRef: DotNet.createJSStreamReference(file),
+                Name: file.name,
+                RelPath: relPath || file.webkitRelativePath || file.name,
+                ContentType: file.type || 'application/octet-stream',
+                Size: file.size
+              }));
+            await dotnet.invokeMethodAsync('ReceiveDroppedFiles', payload);
+          }
+
+          async function onInputChange(e, dotnet) {
+            const input = e.currentTarget;
+            const files = Array.from(input.files || []);
+            const payload = files
+              .filter(file => file && file.size > 0)       // ← skip zero-byte
+              .map(file => ({
+                StreamRef: DotNet.createJSStreamReference(file),
+                Name: file.name,
+                RelPath: file.webkitRelativePath || file.name,
+                ContentType: file.type || 'application/octet-stream',
+                Size: file.size
+              }));
+            await dotnet.invokeMethodAsync('ReceiveDroppedFiles', payload);
+            input.value = ""; // allow re-pick of same folder
+          }
+
+          function openPicker(inputEl) {
+            if (!inputEl) return;
+            inputEl.click();
+          }
+
+          function init(dropEl, dotnetRef, inputEl) {
+            if (inputEl) {
+              enableDirectory(inputEl);
+              const handler = ev => onInputChange(ev, dotnetRef);
+              inputEl.addEventListener('change', handler);
+              inputEl.__tgChangeHandler = handler;
+            }
+            if (dropEl) {
+              addHover(dropEl, dotnetRef);
+              const d = e => onDrop(e, dotnetRef);
+              dropEl.addEventListener('drop', d);
+              dropEl.__tgDropHandler = d;
+            }
+          }
+
+          function dispose(dropEl) {
+            if (dropEl?.__tgDropHandler) {
+              dropEl.removeEventListener('drop', dropEl.__tgDropHandler);
+              delete dropEl.__tgDropHandler;
+            }
+            removeHover(dropEl);
+          }
+
+          return { init, dispose, openPicker };
+        })();
+    </script>
+
+
+
+
 </body>
 
 </html>

@@ -5,6 +5,7 @@ using TruthGate_Web.Endpoints;
 using TruthGate_Web.Interfaces;
 using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
+using static TruthGate_Web.Components.Pages.Settings.Shared.PublishDialog;
 
 namespace TruthGate_Web.Services
 {
@@ -67,8 +68,8 @@ namespace TruthGate_Web.Services
             var tempList = new List<(IFormFile f, string rel)>(form.Files.Count);
             foreach (var f in form.Files)
             {
-                var relRaw = !string.IsNullOrWhiteSpace(f.Name) ? f.Name : f.FileName;
-                var rel = Clean(relRaw);
+                var relRaw = !string.IsNullOrWhiteSpace(f.FileName) ? f.FileName : f.Name;
+                var rel = Clean(relRaw).Replace('\\', '/').TrimStart('/');
                 tempList.Add((f, rel));
             }
 
@@ -130,32 +131,87 @@ namespace TruthGate_Web.Services
         }
 
         // ---------- Publish from IBrowserFile (component path) ----------
-        public async Task<(string JobId, int FileCount)> PublishFromBrowserFilesAsync(string domain, IEnumerable<(IBrowserFile File, string RelPath)> files, CancellationToken ct)
+        public async Task<(string JobId, int FileCount)> PublishFromBrowserFilesAsync(
+     string domain,
+     IEnumerable<(IBrowserFile File, string RelPath)> files,
+     CancellationToken ct)
         {
             var (ed, siteLeaf, tgpLeaf) = await EnsureDomainLeavesAsync(domain);
 
-            // final validation (component already normalized, but enforce here too)
-            var items = files.Select(n =>
-            {
-                var rel = Clean(n.RelPath);
-                return new TempItem(
-                    Open: () => n.File.OpenReadStream(long.MaxValue), // trust server limits elsewhere
-                    Rel: rel,
-                    ContentType: string.IsNullOrWhiteSpace(n.File.ContentType) ? "application/octet-stream" : n.File.ContentType
-                );
-            }).ToList();
+            // Build temp list with cleaning + zero-size guard
+            var tempList = files
+                .Where(n => n.File is not null && n.File.Size > 0)
+                .Select(n =>
+                {
+                    var rel = Clean(n.RelPath ?? string.Empty)
+                                .Replace('\\', '/')
+                                .TrimStart('/');
+                    return (f: n.File, rel);
+                })
+                .ToList();
 
-            if (!items.Any(t => t.Rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+            if (tempList.Count == 0)
+                throw new InvalidOperationException("No files.");
+
+            // Strip common first folder
+            var prefix = CommonFirstFolderPrefix(tempList.Select(t => t.rel));
+            if (!string.IsNullOrEmpty(prefix) && !prefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            {
+                for (int i = 0; i < tempList.Count; i++)
+                {
+                    var r = tempList[i].rel;
+                    if (r.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase))
+                        tempList[i] = (tempList[i].f, r[(prefix.Length + 1)..]);
+                }
+            }
+
+            // If still no root index.html, strip X/ when X/index.html exists
+            if (!tempList.Any(t => t.rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+            {
+                var firstIx = tempList.Select(t => t.rel)
+                                      .FirstOrDefault(r => r.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(firstIx))
+                {
+                    var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
+                    for (int i = 0; i < tempList.Count; i++)
+                    {
+                        var r = tempList[i].rel;
+                        if (r.StartsWith(baseFolder + "/", StringComparison.OrdinalIgnoreCase))
+                            tempList[i] = (tempList[i].f, r[(baseFolder.Length + 1)..]);
+                    }
+                }
+            }
+
+            if (!tempList.Any(t => t.rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("No index.html detected at site root after normalization.");
 
+            // Prepare items with async openers
+            var items = tempList.Select(t =>
+            {
+                Func<CancellationToken, Task<Stream>> openAsync =
+                    t.f is JsBrowserFile jsf
+                        ? (ct2) => jsf.OpenReadStreamAsync(long.MaxValue, ct2) // async JS stream
+                        : (ct2) => Task.FromResult(t.f.OpenReadStream(long.MaxValue, ct2)); // regular IBrowserFile
+
+                var contentType = string.IsNullOrWhiteSpace(t.f.ContentType) ? "application/octet-stream" : t.f.ContentType;
+                return new
+                {
+                    OpenAsync = openAsync,
+                    Rel = t.rel,
+                    ContentType = contentType
+                };
+            }).ToList();
+
+            // Stage to MFS
             var jobId = Guid.NewGuid().ToString("N");
             var stagingRoot = IpfsGateway.NormalizeMfs($"/staging/sites/{siteLeaf}/{jobId}");
             await IpfsAdmin.FilesMkdirAsync(stagingRoot, _http, _keys, ct);
 
+            // IMPORTANT: await the async open per file; do *not* block synchronously
             foreach (var it in items)
             {
                 var dest = IpfsGateway.NormalizeMfs($"{stagingRoot}/{it.Rel}");
-                using var src = it.Open();
+                await using var src = await it.OpenAsync(ct);
                 await IpfsAdmin.FilesWriteAsync(dest, src, _http, _keys, it.ContentType, ct);
             }
 
@@ -169,6 +225,8 @@ namespace TruthGate_Web.Services
             var enqueuedId = await _queue.EnqueueAsync(job);
             return (enqueuedId, items.Count);
         }
+
+
 
         // ---------- Backup / Export ----------
         public async Task<(byte[] Bytes, string FileName)> ExportBackupAsync(string domain, string passphrase, CancellationToken ct)

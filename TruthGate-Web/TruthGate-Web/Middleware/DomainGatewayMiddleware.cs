@@ -51,7 +51,7 @@ namespace TruthGate_Web.Middleware
             var cache = ctx.RequestServices.GetRequiredService<IMemoryCache>();
             var ports = new PortOptions() { Http = 9010 };
 
-            var ttl = TimeSpan.FromHours(2);
+            var ttl = TimeSpan.FromMinutes(10);
 
             // Resolve CID (cached)
             var cid = await IpfsGateway.ResolveMfsFolderToCidCachedAsync(mfsPath!, clientFactory, cache, ttl);

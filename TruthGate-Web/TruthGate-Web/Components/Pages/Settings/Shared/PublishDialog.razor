@@ -2,251 +2,345 @@
 @using System.Net.Http.Headers
 @using FluentValidation
 @using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.JSInterop
 @using TruthGate_Web.Interfaces
 @inject IHttpClientFactory HttpFactory
 @inject ISnackbar Snackbar
 @inject IApiKeyProvider Keys
 @inject NavigationManager Nav
 @inject ITruthGatePublishService PublishService
+@inject IJSRuntime JS
 
 <style>
     .upload-zone {
-        position: relative;
+    position: relative;
     }
 
     .file-upload-input {
-        position: absolute;
-        inset: 0; /* top:0; right:0; bottom:0; left:0 */
-        width: 100%;
-        height: 100%;
-        z-index: 10;
-        opacity: 0;
-        cursor: pointer;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+    opacity: 0;
+    cursor: pointer;
     }
 
+    .drop-target {
+    transition: border-color .15s ease;
+    }
+
+    .drop-target.active {
+    border-color: var(--mud-palette-primary);
+    }
 </style>
 
 <MudDialog>
-  <DialogContent>
-    <MudText Typo="Typo.body2">
-      Heads up: browser uploads can be limited by file size and count. If you hit limits,
-      use the TruthGate Admin API instead — see
-      <MudLink Href="https://truthorigin.io/docs" Target="_blank">docs</MudLink>.
-    </MudText>
+    <DialogContent>
+        <MudText Typo="Typo.body2">
+            Heads up: browser uploads can be limited by file size and count. If you hit limits,
+            use the TruthGate Admin API instead — see
+            <MudLink Href="https://truthorigin.io/docs" Target="_blank">docs</MudLink>.
+        </MudText>
 
-    <MudStack Style="width:100%" Class="mt-2">
-      <MudForm Model="@_model" @bind-IsValid="_isValid" @bind-IsTouched="_isTouched" Validation="@_validationRules.ValidateValue">
-        <MudItem xs="12">
-          <MudFileUpload T="IReadOnlyList<IBrowserFile>"
-                         @ref="_fileUpload"
-                         @bind-Files="_model.Files"
-                         For="@(()=>_model.Files)"
-                         AppendMultipleFiles
-                         Hidden="false"
-                         MaximumFileCount="100000"
-                         InputClass="file-upload-input"
-                         ErrorText="@string.Empty"
-                         @ondrop="ClearDragClass"
-                         @ondragenter="SetDragClass"
-                         @ondragleave="ClearDragClass"
-                         @ondragend="ClearDragClass">
-            <ActivatorContent>
-                 <div class="upload-zone">
-              <MudPaper Height="300px" Outlined="true" Class="@_dragClass">
-                <MudText Typo="Typo.h6">Drag & drop your built site (files & folders) here, or click</MudText>
+        <MudStack Style="width:100%" Class="mt-2">
+            <MudForm Model="@_model" @bind-IsValid="_isValid" @bind-IsTouched="_isTouched" Validation="@_validationRules.ValidateValue">
 
-                @if (_previewPaths.Count > 0)
+                <!-- Our own Mud-styled drop zone + hidden InputFile -->
+                <MudItem xs="12">
+                    <div class="upload-zone">
+                        <div @ref="_dropEl">
+                            <MudPaper Height="300px" Outlined="true" Class="@_dropClass">
+                                <MudText Typo="Typo.h6">Drag & drop your built site (files & folders) here, or click</MudText>
+
+                                @if (_previewPaths.Count > 0)
+                                {
+                                    <MudText Typo="Typo.subtitle2" Class="mt-2">Will upload as:</MudText>
+                                    @foreach (var p in _previewPaths.Take(12))
+                                    {
+                                        <MudChip T="string" Color="Color.Dark" Text="@p" />
+                                    }
+                                    @if (_previewPaths.Count > 12)
+                                    {
+                                        <MudChip T="string" Color="Color.Dark" Text="+ more…" />
+                                    }
+                                }
+                            </MudPaper>
+                        </div>
+                        <!-- Hidden input: we enable directory-pick via JS (webkitdirectory), supports recursive files on click -->
+                        <!-- Hidden input: handled entirely in JS -->
+                        <input type="file"
+                               @ref="_inputEl"
+                               multiple
+                               class="file-upload-input" />
+
+                    </div>
+
+                    <MudToolBar Gutters="false" Class="relative d-flex justify-end gap-4 mt-3">
+                        <MudButton Color="Color.Primary"
+                        OnClick="@OpenFilePickerAsync"
+                        Variant="Variant.Filled"
+                        Disabled="@_busy"
+                        StartIcon="@Icons.Material.Filled.CloudUpload">
+                            Open file picker
+                        </MudButton>
+
+                        <MudButton Color="Color.Primary"
+                        Disabled="@(_busy || !_isValid || !_isTouched || !_selected.Any())"
+                        OnClick="@UploadAsync"
+                        Variant="Variant.Filled"
+                        StartIcon="@Icons.Material.Filled.CloudDone">
+                            Upload
+                        </MudButton>
+
+                        <MudButton Color="Color.Error"
+                        Disabled="@(_busy || !_selected.Any())"
+                        OnClick="@ClearAsync"
+                        Variant="Variant.Filled"
+                        StartIcon="@Icons.Material.Filled.ClearAll">
+                            Clear
+                        </MudButton>
+                    </MudToolBar>
+
+                    @if (_busy)
+                    {
+                        <div class="mt-2 d-flex align-center gap-2">
+                            <MudProgressCircular Indeterminate="true" />
+                            <MudText Typo="Typo.body2">@(_busyMsg ?? "Uploading…")</MudText>
+                        </div>
+                    }
+                </MudItem>
+
+                @if (!string.IsNullOrWhiteSpace(_error))
                 {
-                  <MudText Typo="Typo.subtitle2" Class="mt-2">Will upload as:</MudText>
-                  @foreach (var p in _previewPaths.Take(12))
-                  { <MudChip T="string" Color="Color.Dark" Text="@p" /> }
-                  @if (_previewPaths.Count > 12)
-                  { <MudChip T="string" Color="Color.Dark" Text="+ more…" /> }
+                    <MudItem><MudText Color="Color.Error" Typo="Typo.body2">@_error</MudText></MudItem>
                 }
-              </MudPaper>
-              </div>
-            </ActivatorContent>
-          </MudFileUpload>
+            </MudForm>
+        </MudStack>
+    </DialogContent>
 
-          <MudToolBar Gutters="false" Class="relative d-flex justify-end gap-4 mt-3">
-            <MudButton Color="Color.Primary" OnClick="@OpenFilePickerAsync" Variant="Variant.Filled"
-                       Disabled="@_busy" StartIcon="@Icons.Material.Filled.CloudUpload">
-              Open file picker
-            </MudButton>
-            <MudButton Color="Color.Primary"
-                       Disabled="@(_busy || !_isValid || !_isTouched || _model.Files is null || !_model.Files.Any())"
-                       OnClick="@UploadAsync"
-                       Variant="Variant.Filled"
-                       StartIcon="@Icons.Material.Filled.CloudDone">
-              Upload
-            </MudButton>
-            <MudButton Color="Color.Error"
-                       Disabled="@(_busy || _model.Files is null || !_model.Files.Any())"
-                       OnClick="@ClearAsync"
-                       Variant="Variant.Filled"
-                       StartIcon="@Icons.Material.Filled.ClearAll">
-              Clear
-            </MudButton>
-          </MudToolBar>
-
-          @if (_busy)
-          {
-            <div class="mt-2 d-flex align-center gap-2">
-              <MudProgressCircular Indeterminate="true" />
-              <MudText Typo="Typo.body2">@(_busyMsg ?? "Uploading…")</MudText>
-            </div>
-          }
-        </MudItem>
-
-        <MudItem>
-          @if (_fileUpload?.ValidationErrors.Any() ?? false)
-          { <MudText Color="Color.Error" Typo="Typo.caption">@_fileUpload?.ValidationErrors[0]</MudText> }
-        </MudItem>
-
-        @if (!string.IsNullOrWhiteSpace(_error))
-        {
-          <MudItem><MudText Color="Color.Error" Typo="Typo.body2">@_error</MudText></MudItem>
-        }
-      </MudForm>
-    </MudStack>
-  </DialogContent>
-
-  <DialogActions>
-    <MudButton Disabled="@_busy" OnClick="()=>MudDialog.Cancel()">Close</MudButton>
-  </DialogActions>
+    <DialogActions>
+        <MudButton Disabled="@_busy" OnClick="()=>MudDialog.Cancel()">Close</MudButton>
+    </DialogActions>
 </MudDialog>
 
 @code {
-#nullable enable
-  [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
-  [Parameter] public string Domain { get; set; } = "";
+    #nullable enable
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Domain { get; set; } = "";
 
-  private Model _model = new();
-  private ModelFluentValidator _validationRules = new();
-  private MudFileUpload<IReadOnlyList<IBrowserFile>>? _fileUpload;
-  private bool _isValid;
-  private bool _isTouched;
-  private string? _error;
-  private bool _busy;
-  private string? _busyMsg;
+    private readonly Model _model = new();
+    private readonly ModelFluentValidator _validationRules = new();
+    private bool _isValid;
+    private bool _isTouched;
+    private string? _error;
+    private bool _busy;
+    private string? _busyMsg;
 
-  private const string DefaultDragClass = "relative rounded-lg border-2 border-dashed pa-4 mt-4 mud-width-full mud-height-full";
-  private string _dragClass = DefaultDragClass;
+    private const string BaseDropClass = "drop-target relative rounded-lg border-2 border-dashed pa-4 mt-4 mud-width-full mud-height-full";
+    private string _dropClass = BaseDropClass;
 
-  private readonly List<string> _previewPaths = new();
+    private readonly List<string> _previewPaths = new();
 
-  public class Model { public IReadOnlyList<IBrowserFile>? Files { get; set; } = new List<IBrowserFile>(); }
-  public class ModelFluentValidator : AbstractValidator<Model>
-  {
-      public ModelFluentValidator()
-      {
-          RuleFor(x => x.Files).NotEmpty().WithMessage("There must be at least 1 file.");
-      }
-      public Func<object, string, Task<IEnumerable<string>>> ValidateValue =>
-          async (model, propertyName) =>
-          {
-              var result = await ValidateAsync(ValidationContext<Model>.CreateWithOptions((Model)model, x => x.IncludeProperties(propertyName)));
-              return result.IsValid ? Array.Empty<string>() : result.Errors.Select(e => e.ErrorMessage);
-          };
-  }
+    private ElementReference _dropEl;
+    private ElementReference _inputEl;
 
-  private void SetDragClass() => _dragClass = $"{DefaultDragClass} mud-border-primary";
-  private void ClearDragClass() => _dragClass = DefaultDragClass;
+    private DotNetObjectReference<PublishDialog>? _selfRef;
 
-  private Task OpenFilePickerAsync() => _fileUpload?.OpenFilePickerAsync() ?? Task.CompletedTask;
+    // Unified selection: either BrowserFile from <InputFile> with webkitRelativePath,
+    // or JS-stream-backed files from drag & drop (wrapped as IBrowserFile).
+    private readonly List<(IBrowserFile File, string RelPath)> _selected = new();
 
-  private Task ClearAsync()
-  {
-      _previewPaths.Clear();
-      _error = null;
-      return _fileUpload?.ClearAsync() ?? Task.CompletedTask;
-  }
+    public class Model { } // dummy to keep MudForm happy
 
-  protected override void OnAfterRender(bool firstRender)
-  {
-      if (_model.Files is not null) BuildNormalizedMapping(previewOnly: true);
-      base.OnAfterRender(firstRender);
-  }
+    public class ModelFluentValidator : AbstractValidator<Model>
+    {
+        public ModelFluentValidator()
+        {
+            // Must have at least 1 file
+        }
+        public Func<object, string, Task<IEnumerable<string>>> ValidateValue =>
+          async (_, __) => Array.Empty<string>();
+    }
 
-  // ---- same normalization as before (client computes n.RelPath and sends as form-part name) ----
-  private sealed record NormalizedFile(IBrowserFile File, string RelPath);
-  private static string S(string? s) => (s ?? "").Replace('\\', '/').Trim();
-  private static string? NormalizeRelPathLoose(string? candidate)
-  {
-      var p = S(candidate);
-      if (string.IsNullOrWhiteSpace(p)) return null;
-      while (p.StartsWith("./")) p = p[2..];
-      p = p.TrimStart('/');
-      p = string.Join('/', p.Split('/', StringSplitOptions.RemoveEmptyEntries));
-      if (p.Contains("..")) return null;
-      return p;
-  }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("TruthGateUpload.init", _dropEl, _selfRef, _inputEl);
 
-  private List<NormalizedFile> BuildNormalizedMapping(bool previewOnly = false)
-  {
-      _previewPaths.Clear();
-      _error = null;
+            // Mark the form as untouched until user interacts
+            _isTouched = false;
+            StateHasChanged();
+        }
+    }
 
-      var files = _model.Files ?? Array.Empty<IBrowserFile>();
-      var raw = new List<(IBrowserFile f, string rawPath)>(files.Count);
+    private Task OpenFilePickerAsync()
+      => JS.InvokeVoidAsync("TruthGateUpload.openPicker", _inputEl).AsTask();
 
-      foreach (var f in files)
-      {
-          var rawPath = NormalizeRelPathLoose(f.Name) ?? Path.GetFileName(f.Name);
-          raw.Add((f, rawPath));
-      }
 
-      string? baseFolder = null;
-      foreach (var r in raw)
-      {
-          var rp = r.rawPath;
-          if (rp.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase)) { baseFolder = rp[..rp.LastIndexOf('/')]; break; }
-          if (rp.Equals("index.html", StringComparison.OrdinalIgnoreCase)) { baseFolder = ""; break; }
-      }
-      if (baseFolder is null && raw.Any(r => r.rawPath.StartsWith("wwwroot/", StringComparison.OrdinalIgnoreCase)))
-          baseFolder = "wwwroot";
-      baseFolder ??= "";
 
-      var normalized = new List<NormalizedFile>(raw.Count);
-      foreach (var (f, rp) in raw)
-      {
-          var rel = rp;
-          if (!string.IsNullOrEmpty(baseFolder) && rel.StartsWith(baseFolder + "/", StringComparison.OrdinalIgnoreCase))
-              rel = rel[(baseFolder.Length + 1)..];
-          if (rel.StartsWith("wwwroot/", StringComparison.OrdinalIgnoreCase))
-              rel = rel[8..];
-          rel = NormalizeRelPathLoose(rel) ?? Path.GetFileName(rel);
-          rel = rel.TrimStart('/');
-          normalized.Add(new NormalizedFile(f, rel));
-      }
+    [JSInvokable]
+    public Task ReceiveDropState(string state)
+    {
+        // "enter" / "leave" visual
+        _dropClass = state == "enter" ? $"{BaseDropClass} mud-border-primary" : BaseDropClass;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
 
-      var hasRootIndex = normalized.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase));
-      if (!hasRootIndex && !previewOnly)
-          _error = "No index.html detected at site root. Make sure your drop includes index.html (or a folder containing it).";
+    public sealed class IncomingJsFile
+    {
+        public IJSStreamReference? StreamRef { get; set; }
+        public string Name { get; set; } = "";
+        public string RelPath { get; set; } = "";
+        public string ContentType { get; set; } = "application/octet-stream";
+        public long Size { get; set; }
+    }
 
-      foreach (var n in normalized.Take(100)) _previewPaths.Add(n.RelPath);
-      return normalized;
-  }
+
+    public sealed class JsBrowserFile : IBrowserFile
+    {
+        private readonly IJSStreamReference _js;
+        public JsBrowserFile(IJSStreamReference js, string name, string contentType, long size)
+            => (_js, Name, ContentType, Size) = (js, name, contentType, size);
+
+        public DateTimeOffset LastModified => DateTimeOffset.UtcNow;
+        public string Name { get; }
+        public long Size { get; }
+        public string ContentType { get; }
+
+    // Preferred async path (convert ValueTask -> Task)
+     public Task<Stream> OpenReadStreamAsync(long maxAllowedSize = long.MaxValue, CancellationToken cancellationToken = default)
+        => _js.OpenReadStreamAsync(maxAllowedSize, cancellationToken).AsTask();
+
+
+        // Optional: keep sync for APIs that require it, but *don’t* use this in the service path.
+        public Stream OpenReadStream(long maxAllowedSize = long.MaxValue, CancellationToken cancellationToken = default)
+            => OpenReadStreamAsync(maxAllowedSize, cancellationToken).ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+
+    [JSInvokable]
+    public Task ReceiveDroppedFiles(IncomingJsFile[] files)
+    {
+        _isTouched = true;
+        _error = null;
+        _previewPaths.Clear();
+        _selected.Clear();
+
+        foreach (var f in files)
+        {
+            if (f.StreamRef is null) continue;
+            if (f.Size <= 0) continue;
+
+            var rel = NormalizeRelPathLoose(f.RelPath) ?? NormalizeRelPathLoose(f.Name) ?? f.Name;
+            var wrapped = new JsBrowserFile(f.StreamRef, f.Name,
+                string.IsNullOrWhiteSpace(f.ContentType) ? "application/octet-stream" : f.ContentType,
+                f.Size);
+
+            _selected.Add((wrapped, rel!));
+        }
+
+
+        NormalizeForPreview();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+
+    private void NormalizeForPreview()
+    {
+        // 1) basic cleanup (./, leading slash, trim "wwwroot/")
+        var cleaned = new List<(IBrowserFile File, string RelPath)>(_selected.Count);
+
+        foreach (var (f, rel0) in _selected)
+        {
+            var rel = rel0 ?? "";
+            if (rel.StartsWith("./")) rel = rel[2..];
+            rel = rel.TrimStart('/');
+            if (rel.StartsWith("wwwroot/", StringComparison.OrdinalIgnoreCase))
+                rel = rel[8..];
+
+            cleaned.Add((f, rel));
+        }
+
+        // 2) strip common first folder (e.g., "wwwroot" if all files share it)
+        var firstPrefix = CommonFirstFolderPrefix(cleaned.Select(t => t.RelPath));
+        if (!string.IsNullOrEmpty(firstPrefix) && !firstPrefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            cleaned = StripPrefix(cleaned, firstPrefix);
+
+        // 3) if still no root index.html, but have X/index.html, strip X/
+        if (!cleaned.Any(t => t.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+        {
+            var firstIx = cleaned.Select(t => t.RelPath)
+                                 .FirstOrDefault(r => r.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(firstIx))
+            {
+                var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
+                cleaned = StripPrefix(cleaned, baseFolder);
+            }
+        }
+
+        _selected.Clear();
+        _selected.AddRange(cleaned);
+
+        // Final validation + preview
+        var hasIndex = _selected.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase));
+        _error = hasIndex ? null : "No index.html detected at site root after normalization.";
+
+        _previewPaths.Clear();
+        _previewPaths.AddRange(_selected.Select(s => s.RelPath).Distinct().Take(100));
+    }
+
+
+
+    private static string? NormalizeRelPathLoose(string? candidate)
+    {
+        var p = (candidate ?? "").Replace('\\', '/').Trim();
+        if (string.IsNullOrWhiteSpace(p)) return null;
+        while (p.StartsWith("./")) p = p[2..];
+        p = p.TrimStart('/');
+        p = string.Join('/', p.Split('/', StringSplitOptions.RemoveEmptyEntries));
+        if (p.Contains("..")) return null;
+        return p;
+    }
+
+    private Task ClearAsync()
+    {
+        _previewPaths.Clear();
+        _error = null;
+        _selected.Clear();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
 
     private async Task UploadAsync()
     {
-        if (_model.Files is null || !_model.Files.Any())
+        if (!_selected.Any())
         { Snackbar.Add("Please add files first.", MudBlazor.Severity.Warning); return; }
 
-        var mapping = BuildNormalizedMapping(previewOnly: false);
         if (!string.IsNullOrWhiteSpace(_error))
         { Snackbar.Add(_error!, MudBlazor.Severity.Error); return; }
 
-        if (!mapping.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+        if (!_selected.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
         { Snackbar.Add("No index.html at root after normalization.", MudBlazor.Severity.Error); return; }
 
         _busy = true; _busyMsg = "Uploading to staging…"; StateHasChanged();
+
         try
         {
-            // Convert to (IBrowserFile, RelPath) tuples
-            var tuples = mapping.Select(n => (n.File, n.RelPath));
+            // Skip any zero-size stragglers to avoid totalLength=0 issues
+            var tuples = _selected
+                .Where(s => s.File is not null && s.File.Size > 0)
+                .Select(s => (s.File, s.RelPath));
 
-            var (jobId, count) = await PublishService.PublishFromBrowserFilesAsync(Domain, tuples, CancellationToken.None);
+            var (jobId, count) = await PublishService.PublishFromBrowserFilesAsync(
+                Domain,
+                tuples,
+                CancellationToken.None);
+
             Snackbar.Add($"Upload queued (staging complete). Files: {count}. Job: {jobId}", MudBlazor.Severity.Success);
             MudDialog.Close();
         }
@@ -260,4 +354,43 @@
         }
     }
 
+
+    private static string CommonFirstFolderPrefix(IEnumerable<string> rels)
+    {
+        string? first = null;
+        foreach (var r in rels)
+        {
+            var p = (r ?? "").TrimStart('/');
+            var slash = p.IndexOf('/');
+            var head = slash < 0 ? p : p[..slash];
+            if (string.IsNullOrEmpty(head)) return "";
+            if (first is null) first = head;
+            else if (!head.Equals(first, StringComparison.OrdinalIgnoreCase)) return "";
+        }
+        return first ?? "";
+    }
+
+    private static List<(IBrowserFile File, string RelPath)> StripPrefix(
+        List<(IBrowserFile File, string RelPath)> list, string prefix)
+    {
+        if (string.IsNullOrEmpty(prefix)) return list;
+        var pref = prefix.EndsWith("/") ? prefix : prefix + "/";
+        var outList = new List<(IBrowserFile, string)>(list.Count);
+        foreach (var (f, rel) in list)
+        {
+            var r = rel;
+            if (r.StartsWith(pref, StringComparison.OrdinalIgnoreCase))
+                r = r[pref.Length..];
+            outList.Add((f, r));
+        }
+        return outList;
+    }
+
+    private string RelPath((IBrowserFile File, string RelPath) s) => s.RelPath;
+
+    public async ValueTask DisposeAsync()
+    {
+        _selfRef?.Dispose();
+        await JS.InvokeVoidAsync("TruthGateUpload.dispose", _dropEl);
+    }
 }

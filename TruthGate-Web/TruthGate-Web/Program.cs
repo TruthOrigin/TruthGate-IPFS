@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using TruthGate_Web.Models;
 using TruthGate_Web.Interfaces;
+using Microsoft.AspNetCore.Http.Features;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -134,7 +135,17 @@ if (!builder.Environment.IsDevelopment())
         sp.GetRequiredService<ILogger<LiveCertProvider>>()));
 
 
-
+    builder.Services.Configure<FormOptions>(o =>
+    {
+        // Allow *many* files/fields
+        o.ValueCountLimit = int.MaxValue;               // number of keys/fields in a form
+        o.MultipartBodyLengthLimit = long.MaxValue;     // total body size across all parts
+        o.MultipartHeadersCountLimit = int.MaxValue;
+        o.MultipartHeadersLengthLimit = int.MaxValue;
+        o.MemoryBufferThreshold = int.MaxValue;         // push buffering threshold way up
+        o.ValueLengthLimit = int.MaxValue;              // length of each individual form value
+        o.KeyLengthLimit = int.MaxValue;                // length of each field name
+    });
 
     builder.Services.AddHostedService<ConfigWatchAndIssueService>();
 
