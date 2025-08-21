@@ -47,7 +47,7 @@ namespace TruthGate_Web.Services
 
         private const string ManagedRoot = "/production/pinned";
         private const string StagingRoot = "/production/.staging/ipns";
-        private const string TgpMetaFile = ".tgp-meta.json"; // lives in each version folder
+        private const string TgpMetaFile = "tgp.json"; // lives in each version folder
 
         // concurrency
         private readonly SemaphoreSlim _globalSlots;
@@ -256,13 +256,13 @@ namespace TruthGate_Web.Services
                     await FilesMvAsync(staged, versionFolder, ct);
 
                     // Write TGP sidecar so pruning knows which extra CIDs to unpin later
-                    var meta = new TgpMeta
+                   /* var meta = new TgpMeta
                     {
-                        Kind = "tgp-meta",
+                        Kind = "tpg",
                         PointerCid = pointerCid,
                         TargetCid = tgpTargetCid
                     };
-                    await FilesWriteTextAsync($"{versionFolder}/{TgpMetaFile}", JsonSerializer.Serialize(meta), ct);
+                    await FilesWriteTextAsync($"{versionFolder}/{TgpMetaFile}", JsonSerializer.Serialize(meta), ct);*/
 
                     // Update config with the *pointer* as CurrentCID (UI already expects this)
                     await _config.UpdateAsync(config =>
@@ -286,7 +286,7 @@ namespace TruthGate_Web.Services
         // ---------- TGP helpers ----------
         private sealed class TgpMeta
         {
-            public string Kind { get; set; } = "tgp-meta";
+            public string Kind { get; set; } = "tgp";
             public string? PointerCid { get; set; }
             public string? TargetCid { get; set; }
         }
