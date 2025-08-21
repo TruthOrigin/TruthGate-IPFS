@@ -109,16 +109,13 @@ namespace TruthGate_Web.Controllers
             var info = new DomainIpnsInfo
             {
                 Domain = domain,
-                IpnsKeyName = ed.IpnsKeyName,
+                //IpnsKeyName = ed.IpnsKeyName,
                 IpnsPeerId = peerId,
-                IpnsPath = string.IsNullOrWhiteSpace(peerId) ? null : $"/ipns/{peerId}",
-                TgpFolder = tgpFolder,
+                //IpnsPath = string.IsNullOrWhiteSpace(peerId) ? null : $"/ipns/{peerId}",
+                //TgpFolder = tgpFolder,
                 TgpCid = status.TgpCid,
                 CurrentCid = status.CurrentCid,
-                LastPublishedCid = ed.LastPublishedCid,
-                Warning = string.IsNullOrWhiteSpace(peerId)
-                    ? "IPNS key not found on this node. Import the backup or create one for this domain."
-                    : null
+                LastPublishedCid = ed.LastPublishedCid
             };
 
             return Ok(info);
