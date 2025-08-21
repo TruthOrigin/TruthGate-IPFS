@@ -60,3 +60,9 @@ Issues are sacred.
 Let’s fix decentralized hosting — together.  
 
 👉 [truthgate.io](https://truthgate.io)  
+
+---
+
+## Creator
+
+Solo development done by [MagicCodingMan](https://github.com/magiccodingman), but under the TruthOrigin unbrella.
