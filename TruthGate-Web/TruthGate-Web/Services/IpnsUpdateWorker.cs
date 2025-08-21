@@ -51,6 +51,9 @@ namespace TruthGate_Web.Services
 
         // concurrency
         private readonly SemaphoreSlim _globalSlots;
+        // remembers last processed pointer/target by name within this process
+        private readonly ConcurrentDictionary<string, (string Pointer, string? Target)> _lastSeen = new(StringComparer.OrdinalIgnoreCase);
+
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _perKeyLocks = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, DateTimeOffset> _lastScheduledRun = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _runAllOnce = new(1, 1);
@@ -75,6 +78,35 @@ namespace TruthGate_Web.Services
             if (_opts.ScheduledPerKeyCooldown <= TimeSpan.Zero) _opts.ScheduledPerKeyCooldown = TimeSpan.FromMinutes(10);
 
             _globalSlots = new SemaphoreSlim(_opts.MaxConcurrency, _opts.MaxConcurrency);
+        }
+        private sealed record VersionEntry(int N, string Name, string Path, string Cid, bool IsConnected);
+
+        private async Task<(VersionEntry? Pointer, VersionEntry? Connected)> GetLatestVersionPairAsync(string name, CancellationToken ct)
+        {
+            var children = await ListMfsChildrenAsync(ManagedRoot, ct);
+            var prefix = $"{name}-v";
+            VersionEntry? latestPointer = null;
+            VersionEntry? latestConnected = null;
+
+            foreach (var kv in children)
+            {
+                if (!kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                var m = VersionRx.Match(kv.Key);
+                if (!m.Success || !int.TryParse(m.Groups["n"].Value, out var n)) continue;
+
+                var isConnected = kv.Key.EndsWith("-connected", StringComparison.OrdinalIgnoreCase);
+                var entry = new VersionEntry(n, kv.Key, kv.Value.Path, kv.Value.Cid, isConnected);
+
+                if (isConnected)
+                {
+                    if (latestConnected is null || n > latestConnected.N) latestConnected = entry;
+                }
+                else
+                {
+                    if (latestPointer is null || n > latestPointer.N) latestPointer = entry;
+                }
+            }
+            return (latestPointer, latestConnected);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -217,63 +249,85 @@ namespace TruthGate_Web.Services
                     // Check TGP: see if /tgp.json exists under the pointer root and extract target CID
                     string? tgpTargetCid = await TryReadTgpTargetCidAsync(pointerCid, ct);
 
-                    // Short-circuit: if pointerCid hasn't changed and either there's no TGP target
-                    // or the target hasn't changed meaningfully for our policy, we may just enforce pruning.
-                    if (string.Equals(pointerCid, e.CurrentCID, StringComparison.OrdinalIgnoreCase))
+                    // tgp lookup already done above
+                    // string? tgpTargetCid = await TryReadTgpTargetCidAsync(pointerCid, ct);
+
+                    // 1) in-memory last-seen short-circuit
+                    if (_lastSeen.TryGetValue(e.Name, out var seen) &&
+                        string.Equals(seen.Pointer, pointerCid, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(seen.Target ?? "", tgpTargetCid ?? "", StringComparison.OrdinalIgnoreCase))
                     {
                         if (!e.KeepOldCidPinned)
                             await RemoveAllButLatestAsync(e.Name, ct);
-                        // Note: we don't store target CID in config; pruning logic reads sidecar per version.
                         return;
                     }
 
-                    // New version detected
+                    // 2) MFS latest folder cid short-circuit (covers config lag & restarts)
+                    var (latestPointer, _) = await GetLatestVersionPairAsync(e.Name, ct);
+                    if (latestPointer is not null &&
+                        string.Equals(latestPointer.Cid, pointerCid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!e.KeepOldCidPinned)
+                            await RemoveAllButLatestAsync(e.Name, ct);
+                        _lastSeen[e.Name] = (pointerCid, tgpTargetCid);
+                        // Keep config in sync if it somehow lagged
+                        await _config.UpdateAsync(config =>
+                        {
+                            var t = config.IpnsKeys?.FirstOrDefault(k => string.Equals(k.Name, e.Name, StringComparison.OrdinalIgnoreCase));
+                            if (t is not null) t.CurrentCID = pointerCid;
+                        });
+                        return;
+                    }
+
+                    // 3) New version required
                     var nextVersion = await ComputeNextVersionAsync(e.Name, ct);
                     var versionFolder = $"{ManagedRoot}/{e.Name}-v{nextVersion:000}";
                     var staged = $"{StagingRoot}/{e.Name}/{Guid.NewGuid():N}";
 
-                    // Stage to pin (pointer) to provide to promote
+                    // Stage pointer
                     await EnsureFolderAsync($"{StagingRoot}/{e.Name}", ct);
                     await FilesCpFromIpfsAsync(pointerCid, staged, ct);
                     await PinAddRecursiveAsync(pointerCid, ct);
                     _ = TryProvideAsync(pointerCid, ct);
 
-                    // If TGP target exists: pin+provide it too (no extra copy to MFS to avoid space blowup)
+                    // Stage to managed
+                    await EnsureFolderAsync(ManagedRoot, ct);
+                    await FilesMvAsync(staged, versionFolder, ct);
+
+                    // If TGP target exists: create sibling "-connected" folder with same version
                     if (!string.IsNullOrWhiteSpace(tgpTargetCid))
                     {
                         try
                         {
+                            var connectedFolder = $"{ManagedRoot}/{e.Name}-v{nextVersion:000}-connected";
+                            // copy target content directly to connected folder
+                            await FilesCpFromIpfsAsync(tgpTargetCid!, connectedFolder, ct);
                             await PinAddRecursiveAsync(tgpTargetCid!, ct);
                             _ = TryProvideAsync(tgpTargetCid!, ct);
                         }
                         catch (Exception ex)
                         {
-                            _log.LogWarning(ex, "Pin/provide of TGP target CID failed for '{Name}'. Target={TargetCid}", e.Name, tgpTargetCid);
+                            _log.LogWarning(ex, "Failed to stage TGP connected folder for '{Name}'. Target={TargetCid}", e.Name, tgpTargetCid);
                         }
                     }
 
-                    await EnsureFolderAsync(ManagedRoot, ct);
-                    await FilesMvAsync(staged, versionFolder, ct);
+                    // We DON'T need to write a sidecar here since the pointer folder already contains /tgp.json at root.
+                    // But keep TgpMetaFile = "tgp.json", so pruning can read the target back from each version folder.
 
-                    // Write TGP sidecar so pruning knows which extra CIDs to unpin later
-                   /* var meta = new TgpMeta
-                    {
-                        Kind = "tpg",
-                        PointerCid = pointerCid,
-                        TargetCid = tgpTargetCid
-                    };
-                    await FilesWriteTextAsync($"{versionFolder}/{TgpMetaFile}", JsonSerializer.Serialize(meta), ct);*/
-
-                    // Update config with the *pointer* as CurrentCID (UI already expects this)
+                    // Update config
                     await _config.UpdateAsync(config =>
                     {
                         var t = config.IpnsKeys?.FirstOrDefault(k => string.Equals(k.Name, e.Name, StringComparison.OrdinalIgnoreCase));
                         if (t is not null) t.CurrentCID = pointerCid;
                     });
 
+                    // Remember last-seen in-memory (makes repeated manual runs idempotent)
+                    _lastSeen[e.Name] = (pointerCid, tgpTargetCid);
+
                     // Retroactive cleanup if desired
                     if (!e.KeepOldCidPinned)
                         await RemoveAllButLatestAsync(e.Name, ct);
+
                 }
                 finally { keyLock.Release(); }
             }
