@@ -234,8 +234,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
 
-app.UseBlazorFrameworkFiles();
-app.UseStaticFiles();
 
 app.MapControllers();
 
