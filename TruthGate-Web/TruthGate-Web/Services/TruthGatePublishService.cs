@@ -25,11 +25,21 @@ namespace TruthGate_Web.Services
             var p = (s ?? "").Replace('\\', '/').Trim();
             while (p.StartsWith("./", StringComparison.Ordinal)) p = p[2..];
             p = p.TrimStart('/');
-            p = string.Join('/', p.Split('/', StringSplitOptions.RemoveEmptyEntries));
-            if (p.Contains("..", StringComparison.Ordinal)) throw new InvalidOperationException("Path traversal not allowed.");
-            if (string.IsNullOrWhiteSpace(p)) throw new InvalidOperationException("Bad path.");
-            return p;
+
+            var parts = p.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var part in parts)
+            {
+                if (part == "." || part == "..")
+                    throw new InvalidOperationException("Path traversal not allowed.");
+            }
+
+            if (parts.Length == 0)
+                throw new InvalidOperationException("Bad path.");
+
+            return string.Join('/', parts);
         }
+
 
         private static string CommonFirstFolderPrefix(IEnumerable<string> rels)
         {
@@ -70,8 +80,11 @@ namespace TruthGate_Web.Services
             {
                 var relRaw = !string.IsNullOrWhiteSpace(f.FileName) ? f.FileName : f.Name;
                 var rel = Clean(relRaw).Replace('\\', '/').TrimStart('/');
-                tempList.Add((f, rel));
+
+                // TEMP: log what the server thinks it is
+                //Console.WriteLine($"Incoming file: FileName='{relRaw}', CleanedRel='{rel}'");
             }
+
 
             // strip common first folder
             var prefix = CommonFirstFolderPrefix(tempList.Select(t => t.rel));
@@ -112,11 +125,19 @@ namespace TruthGate_Web.Services
 
             foreach (var (f, rel) in tempList)
             {
-                var dest = IpfsGateway.NormalizeMfs($"{stagingRoot}/{rel}");
-                using var src = f.OpenReadStream();
-                var contentType = string.IsNullOrWhiteSpace(f.ContentType) ? "application/octet-stream" : f.ContentType;
-                await IpfsAdmin.FilesWriteAsync(dest, src, _http, _keys, contentType, ct);
+                try
+                {
+                    var dest = IpfsGateway.NormalizeMfs($"{stagingRoot}/{rel}");
+                    using var src = f.OpenReadStream();
+                    var contentType = string.IsNullOrWhiteSpace(f.ContentType) ? "application/octet-stream" : f.ContentType;
+                    await IpfsAdmin.FilesWriteAsync(dest, src, _http, _keys, contentType, ct);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    throw new InvalidOperationException($"Path traversal not allowed for '{rel}' (original '{f.FileName}'). {ex.Message}");
+                }
             }
+
 
             // enqueue publish
             var job = new PublishJob(
