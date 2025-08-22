@@ -66,186 +66,184 @@ namespace TruthGate_Web.Services
             return (ed, ed.SiteFolderLeaf!, ed.TgpFolderLeaf!);
         }
 
-        private sealed record TempItem(Func<Stream> Open, string Rel, string ContentType);
 
-        // ---------- Publish from <form> (controller path) ----------
-        public async Task<(string JobId, int FileCount)> PublishFromFormAsync(string domain, IFormCollection form, CancellationToken ct)
+        public sealed record PublishItem(
+            string Rel,
+            string ContentType,
+            Func<CancellationToken, Task<Stream>> OpenAsync
+        );
+
+        public async Task<(string JobId, int FileCount)> PublishFromFormAsync(
+            string domain,
+            IFormCollection form,
+            CancellationToken ct)
         {
-            if (form.Files.Count == 0) throw new InvalidOperationException("No files.");
+            if (form?.Files is null || form.Files.Count == 0)
+                throw new InvalidOperationException("No files.");
 
-            var (ed, siteLeaf, tgpLeaf) = await EnsureDomainLeavesAsync(domain);
+            var items = FromForm(form.Files);
+            return await PublishCoreAsync(domain, items, note: "API publish", ct);
+        }
 
-            var tempList = new List<(IFormFile f, string rel)>(form.Files.Count);
-            foreach (var f in form.Files)
+        public async Task<(string JobId, int FileCount)> PublishFromBrowserFilesAsync(
+            string domain,
+            IEnumerable<(IBrowserFile File, string RelPath)> files,
+            CancellationToken ct)
+        {
+            if (files is null) throw new InvalidOperationException("No files.");
+
+            var items = FromBrowserFiles(files);
+            if (items.Count == 0)
+                throw new InvalidOperationException("No files.");
+
+            return await PublishCoreAsync(domain, items, note: "Direct publish", ct);
+        }
+
+        // ----------------------------------------------------------
+        // Adapters (source-specific translation only)
+        // ----------------------------------------------------------
+
+        private List<PublishItem> FromForm(IFormFileCollection files)
+        {
+            var list = new List<(IFormFile f, string rel)>(files.Count);
+
+            foreach (var f in files)
             {
                 var relRaw = !string.IsNullOrWhiteSpace(f.FileName) ? f.FileName : f.Name;
                 var rel = Clean(relRaw).Replace('\\', '/').TrimStart('/');
-
-                // TEMP: log what the server thinks it is
-                //Console.WriteLine($"Incoming file: FileName='{relRaw}', CleanedRel='{rel}'");
+                list.Add((f, rel));
             }
 
-
-            // strip common first folder
-            var prefix = CommonFirstFolderPrefix(tempList.Select(t => t.rel));
-            if (!string.IsNullOrEmpty(prefix) && !prefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            // Turn into PublishItem with sync-open wrapper (IFormFile has no async OpenReadStream)
+            return list.Select(t =>
             {
-                for (int i = 0; i < tempList.Count; i++)
-                {
-                    var r = tempList[i].rel;
-                    if (r.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase))
-                        tempList[i] = (tempList[i].f, r[(prefix.Length + 1)..]);
-                }
-            }
-
-            // if still not root index.html, strip X/ where X/index.html exists
-            if (!tempList.Any(t => t.rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
-            {
-                var firstIx = tempList.Select(t => t.rel)
-                                      .FirstOrDefault(r => r.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrEmpty(firstIx))
-                {
-                    var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
-                    for (int i = 0; i < tempList.Count; i++)
-                    {
-                        var r = tempList[i].rel;
-                        if (r.StartsWith(baseFolder + "/", StringComparison.OrdinalIgnoreCase))
-                            tempList[i] = (tempList[i].f, r[(baseFolder.Length + 1)..]);
-                    }
-                }
-            }
-
-            if (!tempList.Any(t => t.rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException("No index.html detected at site root after normalization.");
-
-            // stage to MFS
-            var jobId = Guid.NewGuid().ToString("N");
-            var stagingRoot = IpfsGateway.NormalizeMfs($"/staging/sites/{siteLeaf}/{jobId}");
-            await IpfsAdmin.FilesMkdirAsync(stagingRoot, _http, _keys, ct);
-
-            foreach (var (f, rel) in tempList)
-            {
-                try
-                {
-                    var dest = IpfsGateway.NormalizeMfs($"{stagingRoot}/{rel}");
-                    using var src = f.OpenReadStream();
-                    var contentType = string.IsNullOrWhiteSpace(f.ContentType) ? "application/octet-stream" : f.ContentType;
-                    await IpfsAdmin.FilesWriteAsync(dest, src, _http, _keys, contentType, ct);
-                }
-                catch (InvalidOperationException ex)
-                {
-                    throw new InvalidOperationException($"Path traversal not allowed for '{rel}' (original '{f.FileName}'). {ex.Message}");
-                }
-            }
-
-
-            // enqueue publish
-            var job = new PublishJob(
-                Domain: ed.Domain,
-                SiteLeaf: siteLeaf,
-                TgpLeaf: tgpLeaf,
-                StagingRoot: stagingRoot,
-                Note: $"API publish {DateTimeOffset.UtcNow:o}");
-
-            var enqueuedId = await _queue.EnqueueAsync(job);
-            return (enqueuedId, tempList.Count);
+                var contentType = string.IsNullOrWhiteSpace(t.f.ContentType) ? "application/octet-stream" : t.f.ContentType;
+                return new PublishItem(
+                    Rel: t.rel,
+                    ContentType: contentType,
+                    OpenAsync: _ => Task.FromResult<Stream>(t.f.OpenReadStream()) // best available
+                );
+            }).ToList();
         }
 
-        // ---------- Publish from IBrowserFile (component path) ----------
-        public async Task<(string JobId, int FileCount)> PublishFromBrowserFilesAsync(
-     string domain,
-     IEnumerable<(IBrowserFile File, string RelPath)> files,
-     CancellationToken ct)
+        private List<PublishItem> FromBrowserFiles(IEnumerable<(IBrowserFile File, string RelPath)> files)
         {
-            var (ed, siteLeaf, tgpLeaf) = await EnsureDomainLeavesAsync(domain);
-
-            // Build temp list with cleaning + zero-size guard
-            var tempList = files
+            var list = files
                 .Where(n => n.File is not null && n.File.Size > 0)
                 .Select(n =>
                 {
-                    var rel = Clean(n.RelPath ?? string.Empty)
-                                .Replace('\\', '/')
-                                .TrimStart('/');
+                    var rel = Clean(n.RelPath ?? string.Empty).Replace('\\', '/').TrimStart('/');
                     return (f: n.File, rel);
                 })
                 .ToList();
 
-            if (tempList.Count == 0)
-                throw new InvalidOperationException("No files.");
-
-            // Strip common first folder
-            var prefix = CommonFirstFolderPrefix(tempList.Select(t => t.rel));
-            if (!string.IsNullOrEmpty(prefix) && !prefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            return list.Select(t =>
             {
-                for (int i = 0; i < tempList.Count; i++)
-                {
-                    var r = tempList[i].rel;
-                    if (r.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase))
-                        tempList[i] = (tempList[i].f, r[(prefix.Length + 1)..]);
-                }
-            }
-
-            // If still no root index.html, strip X/ when X/index.html exists
-            if (!tempList.Any(t => t.rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
-            {
-                var firstIx = tempList.Select(t => t.rel)
-                                      .FirstOrDefault(r => r.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
-                if (!string.IsNullOrEmpty(firstIx))
-                {
-                    var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
-                    for (int i = 0; i < tempList.Count; i++)
-                    {
-                        var r = tempList[i].rel;
-                        if (r.StartsWith(baseFolder + "/", StringComparison.OrdinalIgnoreCase))
-                            tempList[i] = (tempList[i].f, r[(baseFolder.Length + 1)..]);
-                    }
-                }
-            }
-
-            if (!tempList.Any(t => t.rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException("No index.html detected at site root after normalization.");
-
-            // Prepare items with async openers
-            var items = tempList.Select(t =>
-            {
+                // Prefer async JS open when available
                 Func<CancellationToken, Task<Stream>> openAsync =
                     t.f is JsBrowserFile jsf
-                        ? (ct2) => jsf.OpenReadStreamAsync(long.MaxValue, ct2) // async JS stream
-                        : (ct2) => Task.FromResult(t.f.OpenReadStream(long.MaxValue, ct2)); // regular IBrowserFile
+                        ? (ct2) => jsf.OpenReadStreamAsync(long.MaxValue, ct2)
+                        : (ct2) => Task.FromResult<Stream>(t.f.OpenReadStream(long.MaxValue, ct2));
 
                 var contentType = string.IsNullOrWhiteSpace(t.f.ContentType) ? "application/octet-stream" : t.f.ContentType;
-                return new
-                {
-                    OpenAsync = openAsync,
-                    Rel = t.rel,
-                    ContentType = contentType
-                };
-            }).ToList();
 
-            // Stage to MFS
+                return new PublishItem(
+                    Rel: t.rel,
+                    ContentType: contentType,
+                    OpenAsync: openAsync
+                );
+            }).ToList();
+        }
+
+        // ----------------------------------------------------------
+        // One pipeline to rule them all
+        // ----------------------------------------------------------
+
+        private async Task<(string JobId, int FileCount)> PublishCoreAsync(
+            string domain,
+            List<PublishItem> items,
+            string note,
+            CancellationToken ct)
+        {
+            if (items.Count == 0)
+                throw new InvalidOperationException("No files.");
+
+            var (ed, siteLeaf, tgpLeaf) = await EnsureDomainLeavesAsync(domain);
+
+            // 1) Normalize relative paths (strip common folder, ensure root index.html)
+            NormalizeRelativesInPlace(items);
+
+            if (!items.Any(t => t.Rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("No index.html detected at site root after normalization.");
+
+            // 2) Stage to MFS
             var jobId = Guid.NewGuid().ToString("N");
             var stagingRoot = IpfsGateway.NormalizeMfs($"/staging/sites/{siteLeaf}/{jobId}");
             await IpfsAdmin.FilesMkdirAsync(stagingRoot, _http, _keys, ct);
 
-            // IMPORTANT: await the async open per file; do *not* block synchronously
             foreach (var it in items)
             {
                 var dest = IpfsGateway.NormalizeMfs($"{stagingRoot}/{it.Rel}");
-                await using var src = await it.OpenAsync(ct);
-                await IpfsAdmin.FilesWriteAsync(dest, src, _http, _keys, it.ContentType, ct);
+                try
+                {
+                    await using var src = await it.OpenAsync(ct);
+                    await IpfsAdmin.FilesWriteAsync(dest, src, _http, _keys, it.ContentType, ct);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Preserve original rel for debugging; OpenAsync keeps source-specific behavior encapsulated
+                    throw new InvalidOperationException($"Path traversal not allowed for '{it.Rel}'. {ex.Message}");
+                }
             }
 
+            // 3) Enqueue publish job
             var job = new PublishJob(
                 Domain: ed.Domain,
                 SiteLeaf: siteLeaf,
                 TgpLeaf: tgpLeaf,
                 StagingRoot: stagingRoot,
-                Note: $"Direct publish {DateTimeOffset.UtcNow:o}");
+                Note: $"{note} {DateTimeOffset.UtcNow:o}");
 
             var enqueuedId = await _queue.EnqueueAsync(job);
             return (enqueuedId, items.Count);
         }
+
+        // ----------------------------------------------------------
+        // Normalization helpers (shared, deterministic)
+        // ----------------------------------------------------------
+
+        private void NormalizeRelativesInPlace(List<PublishItem> items)
+        {
+            // Strip common first folder
+            var prefix = CommonFirstFolderPrefix(items.Select(t => t.Rel));
+            if (!string.IsNullOrEmpty(prefix) && !prefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var r = items[i].Rel;
+                    if (r.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase))
+                        items[i] = items[i] with { Rel = r[(prefix.Length + 1)..] };
+                }
+            }
+
+            // If still no root index.html, strip X/ where X/index.html exists
+            if (!items.Any(t => t.Rel.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+            {
+                var firstIx = items.Select(t => t.Rel)
+                                   .FirstOrDefault(r => r.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(firstIx))
+                {
+                    var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        var r = items[i].Rel;
+                        if (r.StartsWith(baseFolder + "/", StringComparison.OrdinalIgnoreCase))
+                            items[i] = items[i] with { Rel = r[(baseFolder.Length + 1)..] };
+                    }
+                }
+            }
+        }
+
 
 
 
