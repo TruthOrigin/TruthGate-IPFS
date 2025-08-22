@@ -11,28 +11,29 @@
 @inject ITruthGatePublishService PublishService
 @inject IJSRuntime JS
 
+
 <style>
     .upload-zone {
-    position: relative;
+        position: relative;
     }
 
     .file-upload-input {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    z-index: 10;
-    opacity: 0;
-    cursor: pointer;
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 10;
+        opacity: 0;
+        pointer-events: none;
     }
 
     .drop-target {
-    transition: border-color .15s ease;
+        transition: border-color .15s ease;
     }
 
-    .drop-target.active {
-    border-color: var(--mud-palette-primary);
-    }
+        .drop-target.active {
+            border-color: var(--mud-palette-primary);
+        }
 </style>
 
 <MudDialog>
@@ -78,26 +79,26 @@
 
                     <MudToolBar Gutters="false" Class="relative d-flex justify-end gap-4 mt-3">
                         <MudButton Color="Color.Primary"
-                        OnClick="@OpenFilePickerAsync"
-                        Variant="Variant.Filled"
-                        Disabled="@_busy"
-                        StartIcon="@Icons.Material.Filled.CloudUpload">
+                                   OnClick="@OpenFilePickerAsync"
+                                   Variant="Variant.Filled"
+                                   Disabled="@_busy"
+                                   StartIcon="@Icons.Material.Filled.CloudUpload">
                             Open file picker
                         </MudButton>
 
                         <MudButton Color="Color.Primary"
-                        Disabled="@(_busy || !_isValid || !_isTouched || !_selected.Any())"
-                        OnClick="@UploadAsync"
-                        Variant="Variant.Filled"
-                        StartIcon="@Icons.Material.Filled.CloudDone">
+                                   Disabled="@(_busy || !_isValid || !_isTouched || !_selected.Any())"
+                                   OnClick="@UploadAsync"
+                                   Variant="Variant.Filled"
+                                   StartIcon="@Icons.Material.Filled.CloudDone">
                             Upload
                         </MudButton>
 
                         <MudButton Color="Color.Error"
-                        Disabled="@(_busy || !_selected.Any())"
-                        OnClick="@ClearAsync"
-                        Variant="Variant.Filled"
-                        StartIcon="@Icons.Material.Filled.ClearAll">
+                                   Disabled="@(_busy || !_selected.Any())"
+                                   OnClick="@ClearAsync"
+                                   Variant="Variant.Filled"
+                                   StartIcon="@Icons.Material.Filled.ClearAll">
                             Clear
                         </MudButton>
                     </MudToolBar>
@@ -125,7 +126,7 @@
 </MudDialog>
 
 @code {
-    #nullable enable
+#nullable enable
     [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public string Domain { get; set; } = "";
 
@@ -211,9 +212,9 @@
         public long Size { get; }
         public string ContentType { get; }
 
-    // Preferred async path (convert ValueTask -> Task)
-     public Task<Stream> OpenReadStreamAsync(long maxAllowedSize = long.MaxValue, CancellationToken cancellationToken = default)
-        => _js.OpenReadStreamAsync(maxAllowedSize, cancellationToken).AsTask();
+        // Preferred async path (convert ValueTask -> Task)
+        public Task<Stream> OpenReadStreamAsync(long maxAllowedSize = long.MaxValue, CancellationToken cancellationToken = default)
+           => _js.OpenReadStreamAsync(maxAllowedSize, cancellationToken).AsTask();
 
 
         // Optional: keep sync for APIs that require it, but *don’t* use this in the service path.
@@ -221,6 +222,38 @@
             => OpenReadStreamAsync(maxAllowedSize, cancellationToken).ConfigureAwait(false).GetAwaiter().GetResult();
     }
 
+    [JSInvokable]
+    public Task BeginAddFiles()
+    {
+        _isTouched = true;
+        _error = null;
+        _previewPaths.Clear();
+        _selected.Clear();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task AppendDroppedFiles(IncomingJsFile[] files)
+    {
+        foreach (var f in files)
+        {
+            if (f.StreamRef is null) continue; // optional: set _error if null
+            var rel = NormalizeRelPathLoose(f.RelPath) ?? NormalizeRelPathLoose(f.Name) ?? f.Name;
+            var wrapped = new JsBrowserFile(f.StreamRef, f.Name,
+                string.IsNullOrWhiteSpace(f.ContentType) ? "application/octet-stream" : f.ContentType,
+                f.Size);
+            _selected.Add((wrapped, rel!));
+        }
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task EndAddFiles()
+    {
+        NormalizeForPreview();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
 
     [JSInvokable]
     public Task ReceiveDroppedFiles(IncomingJsFile[] files)
@@ -232,8 +265,16 @@
 
         foreach (var f in files)
         {
-            if (f.StreamRef is null) continue;
-            if (f.Size <= 0) continue;
+            if (f.Size <= 0)
+                continue;
+
+            if (f.StreamRef is null)
+            {
+                _error = "This build/runtime doesn’t support JS streaming (DotNet.createJSStreamReference is unavailable).";
+                // Bail early; don’t half-populate
+                StateHasChanged();
+                return Task.CompletedTask;
+            }
 
             var rel = NormalizeRelPathLoose(f.RelPath) ?? NormalizeRelPathLoose(f.Name) ?? f.Name;
             var wrapped = new JsBrowserFile(f.StreamRef, f.Name,
@@ -243,55 +284,86 @@
             _selected.Add((wrapped, rel!));
         }
 
-
         NormalizeForPreview();
         StateHasChanged();
         return Task.CompletedTask;
     }
 
 
+
     private void NormalizeForPreview()
     {
-        // 1) basic cleanup (./, leading slash, trim "wwwroot/")
+        // 1) basic cleanup (./, leading slash, collapse //, trim "wwwroot/")
         var cleaned = new List<(IBrowserFile File, string RelPath)>(_selected.Count);
 
         foreach (var (f, rel0) in _selected)
         {
-            var rel = rel0 ?? "";
-            if (rel.StartsWith("./")) rel = rel[2..];
+            var rel = (rel0 ?? string.Empty).Replace('\\', '/');
+
+            // remove ./ prefixes
+            while (rel.StartsWith("./")) rel = rel[2..];
+
+            // trim leading slashes
             rel = rel.TrimStart('/');
+
+            // collapse empty segments
+            rel = string.Join('/', rel.Split('/', StringSplitOptions.RemoveEmptyEntries));
+
+            // special-case: many folks drop a folder literally named "wwwroot"
             if (rel.StartsWith("wwwroot/", StringComparison.OrdinalIgnoreCase))
                 rel = rel[8..];
 
             cleaned.Add((f, rel));
         }
 
-        // 2) strip common first folder (e.g., "wwwroot" if all files share it)
-        var firstPrefix = CommonFirstFolderPrefix(cleaned.Select(t => t.RelPath));
-        if (!string.IsNullOrEmpty(firstPrefix) && !firstPrefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
-            cleaned = StripPrefix(cleaned, firstPrefix);
-
-        // 3) if still no root index.html, but have X/index.html, strip X/
+        // 2) If we already have an index.html at root, we’re good.
         if (!cleaned.Any(t => t.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
         {
-            var firstIx = cleaned.Select(t => t.RelPath)
-                                 .FirstOrDefault(r => r.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
-            if (!string.IsNullOrEmpty(firstIx))
+            // 3) Find all candidates ending with /index.html, choose the shallowest (fewest segments)
+            var ixCandidates = cleaned
+                .Select(t => t.RelPath)
+                .Where(p => p.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase))
+                .Select(p => new { Path = p, Segs = p.Split('/', StringSplitOptions.RemoveEmptyEntries).Length })
+                .OrderBy(x => x.Segs)
+                .ToList();
+
+            if (ixCandidates.Count > 0)
             {
-                var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
+                var chosen = ixCandidates[0].Path;
+                var baseFolder = chosen[..chosen.LastIndexOf('/')]; // everything before /index.html
                 cleaned = StripPrefix(cleaned, baseFolder);
+            }
+            else
+            {
+                // 4) As a last resort, if EVERY file shares a single first folder, strip that.
+                var firstPrefix = CommonFirstFolderPrefix(cleaned.Select(t => t.RelPath));
+                if (!string.IsNullOrEmpty(firstPrefix) &&
+                    !firstPrefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+                {
+                    cleaned = StripPrefix(cleaned, firstPrefix);
+                }
             }
         }
 
+        // 5) Commit
         _selected.Clear();
         _selected.AddRange(cleaned);
 
-        // Final validation + preview
+        // 6) Final validation + preview
         var hasIndex = _selected.Any(n => n.RelPath.Equals("index.html", StringComparison.OrdinalIgnoreCase));
-        _error = hasIndex ? null : "No index.html detected at site root after normalization.";
+        _error = hasIndex ? null : BuildNoIndexDebugMessage(_selected);
 
         _previewPaths.Clear();
         _previewPaths.AddRange(_selected.Select(s => s.RelPath).Distinct().Take(100));
+    }
+
+    private static string BuildNoIndexDebugMessage(IEnumerable<(IBrowserFile File, string RelPath)> items)
+    {
+        // helpful, compact diagnostic rather than a dead-end message
+        var sample = string.Join(", ",
+            items.Select(i => i.RelPath).Distinct().Take(10));
+        return $"No index.html detected at site root after normalization. " +
+               $"Sample of normalized paths: [{sample}]";
     }
 
 
@@ -371,7 +443,7 @@
     }
 
     private static List<(IBrowserFile File, string RelPath)> StripPrefix(
-        List<(IBrowserFile File, string RelPath)> list, string prefix)
+    List<(IBrowserFile File, string RelPath)> list, string prefix)
     {
         if (string.IsNullOrEmpty(prefix)) return list;
         var pref = prefix.EndsWith("/") ? prefix : prefix + "/";
