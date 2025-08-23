@@ -6,7 +6,10 @@ using TruthGate_Web.Interfaces;
 using TruthGate_Web.Models;
 using TruthGate_Web.Utils;
 using static TruthGate_Web.Components.Pages.Settings.Shared.PublishDialog;
-
+using Microsoft.AspNetCore.WebUtilities;
+using static System.Net.WebRequestMethods;
+using Microsoft.Net.Http.Headers;
+using Microsoft.AspNetCore.WebUtilities;
 namespace TruthGate_Web.Services
 {
     public sealed class TruthGatePublishService : ITruthGatePublishService
@@ -155,15 +158,199 @@ namespace TruthGate_Web.Services
             }).ToList();
         }
 
+
+        public async Task<(string JobId, int FileCount)> PublishFromMultipartStreamAsync(
+            string domain,
+            MultipartReader reader,
+            CancellationToken ct)
+        {
+            var (ed, siteLeaf, tgpLeaf) = await EnsureDomainLeavesAsync(domain);
+
+            // Create staging root with a RAW subfolder we can safely write into
+            var jobId = Guid.NewGuid().ToString("N");
+            var stagingRoot = IpfsGateway.NormalizeMfs($"/staging/sites/{siteLeaf}/{jobId}");
+            var rawRoot = IpfsGateway.NormalizeMfs($"{stagingRoot}/raw");
+
+            await IpfsAdmin.FilesMkdirAsync(stagingRoot, _http, _keys, ct);
+            await IpfsAdmin.FilesMkdirAsync(rawRoot, _http, _keys, ct);
+
+            var uploadedRels = new List<string>();
+            var count = 0;
+
+            try
+            {
+                MultipartSection? section;
+                while ((section = await reader.ReadNextSectionAsync(ct)) is not null)
+                {
+                    // Pull raw header values (can be multiple)
+                    section.Headers.TryGetValue("Content-Disposition", out var cdValues);
+
+                    ContentDispositionHeaderValue? disp = null;
+                    if (cdValues.Count > 0)
+                    {
+                        foreach (var v in cdValues)
+                            if (ContentDispositionHeaderValue.TryParse(v, out var tmp))
+                                disp = tmp;  // prefer the last successfully parsed
+                    }
+                    else
+                    {
+                        ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out disp);
+                    }
+
+                    var isFile = disp is not null
+                        && disp.DispositionType.Equals("form-data", StringComparison.OrdinalIgnoreCase)
+                        && (!string.IsNullOrEmpty(disp.FileName.Value) || !string.IsNullOrEmpty(disp.FileNameStar.Value));
+
+                    if (!isFile) continue;
+
+                    var relRaw = disp.FileNameStar.Value ?? disp.FileName.Value ?? disp.Name.Value;
+                    var rel = Clean(relRaw ?? string.Empty).Replace('\\', '/').TrimStart('/');
+
+                    if (string.IsNullOrWhiteSpace(rel))
+                        throw new InvalidOperationException("A file was uploaded without a valid filename.");
+
+                    // stream directly into MFS under /raw/<rel>
+                    var dest = IpfsGateway.NormalizeMfs($"{rawRoot}/{rel}");
+                    var contentType = section.ContentType ?? "application/octet-stream";
+
+                    // Ensure parent folders exist in MFS (mkdir -p behavior)
+                    await MkParentsAsync(dest, ct);
+
+                    // IMPORTANT: Stream copy only; FilesWriteAsync must not buffer entire content.
+                    // This will drain section.Body and release memory as we go.
+                    await IpfsAdmin.FilesWriteAsync(dest, section.Body, _http, _keys, contentType, ct);
+
+                    uploadedRels.Add(rel);
+                    count++;
+                }
+
+                if (count == 0)
+                    throw new InvalidOperationException("No files.");
+
+                // Normalize paths from /raw/* into the staging root.
+                var moveMap = BuildNormalizationMap(uploadedRels);
+
+                // Validation: ensure a root index.html will exist
+                if (!moveMap.Values.Any(v => v.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException("No index.html detected at site root after normalization.");
+
+                // Server-side moves inside MFS (no re-upload)
+                foreach (var kv in moveMap)
+                {
+                    var src = IpfsGateway.NormalizeMfs($"{rawRoot}/{kv.Key}");
+                    var dst = IpfsGateway.NormalizeMfs($"{stagingRoot}/{kv.Value}");
+
+                    // mkdir -p parent
+                    await MkParentsAsync(dst, ct);
+
+                    try
+                    {
+                        await IpfsAdmin.FilesMvAsync(src, dst, _http, _keys, ct);
+                    }
+                    catch
+                    {
+                        await IpfsAdmin.FilesCpAsync(src, dst, _http, _keys, ct);
+                        await IpfsAdmin.FilesRmIfExistsAsync(src, _http, _keys, recursive: false, ct);
+                    }
+                }
+
+                // Clean up raw folder (best-effort)
+                await SafeRmAsync(rawRoot, recursive: true, ct);
+
+                // Enqueue publish job (finalized stagingRoot)
+                var job = new PublishJob(
+                    Domain: ed.Domain,
+                    SiteLeaf: siteLeaf,
+                    TgpLeaf: tgpLeaf,
+                    StagingRoot: stagingRoot,
+                    Note: $"API publish streamed {DateTimeOffset.UtcNow:o}");
+
+                var enqueuedId = await _queue.EnqueueAsync(job);
+                return (enqueuedId, count);
+            }
+            catch
+            {
+                // On any failure, nuke the staging area so nothing sticks around
+                await SafeRmAsync(stagingRoot, recursive: true, ct);
+                throw;
+            }
+        }
+
+        // ---------- helpers ----------
+
+        private async Task MkParentsAsync(string mfsPath, CancellationToken ct)
+        {
+            // Create parent directory of mfsPath (like `mkdir -p`)
+            var idx = mfsPath.LastIndexOf('/');
+            if (idx <= 0) return;
+
+            var parent = mfsPath[..idx];
+            if (string.IsNullOrWhiteSpace(parent)) return;
+
+            await IpfsAdmin.FilesMkdirAsync(parent, _http, _keys, ct);
+        }
+
+        private async Task SafeRmAsync(string mfsPath, bool recursive, CancellationToken ct)
+        {
+            try { await IpfsAdmin.FilesRmIfExistsAsync(mfsPath, _http, _keys, recursive, ct); }
+            catch
+            {
+                /* best-effort */
+            }
+        }
+
+        /// <summary>
+        /// Returns a mapping from original uploaded rel (under /raw) to final normalized rel.
+        /// Mirrors your previous normalization:
+        ///  - strip common first folder (unless that folder is literally "index.html")
+        ///  - if still no root index.html, strip X/ when X/index.html exists
+        /// </summary>
+        private Dictionary<string, string> BuildNormalizationMap(IEnumerable<string> rels)
+        {
+            var list = rels.ToList();
+            var map = list.ToDictionary(r => r, r => r); // start as identity
+
+            // 1) Strip common first folder
+            var prefix = CommonFirstFolderPrefix(map.Values);
+            if (!string.IsNullOrEmpty(prefix) && !prefix.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var k in list)
+                {
+                    var r = map[k];
+                    if (r.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase))
+                        map[k] = r[(prefix.Length + 1)..];
+                }
+            }
+
+            // 2) If still no root index.html, strip X/ when X/index.html exists
+            if (!map.Values.Any(v => v.Equals("index.html", StringComparison.OrdinalIgnoreCase)))
+            {
+                var firstIx = map.Values.FirstOrDefault(v => v.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(firstIx))
+                {
+                    var baseFolder = firstIx[..firstIx.LastIndexOf('/')];
+                    foreach (var k in list)
+                    {
+                        var r = map[k];
+                        if (r.StartsWith(baseFolder + "/", StringComparison.OrdinalIgnoreCase))
+                            map[k] = r[(baseFolder.Length + 1)..];
+                    }
+                }
+            }
+
+            return map;
+        }
+
+
         // ----------------------------------------------------------
         // One pipeline to rule them all
         // ----------------------------------------------------------
 
         private async Task<(string JobId, int FileCount)> PublishCoreAsync(
-            string domain,
-            List<PublishItem> items,
-            string note,
-            CancellationToken ct)
+                string domain,
+                List<PublishItem> items,
+                string note,
+                CancellationToken ct)
         {
             if (items.Count == 0)
                 throw new InvalidOperationException("No files.");

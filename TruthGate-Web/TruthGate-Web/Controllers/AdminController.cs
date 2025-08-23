@@ -6,12 +6,34 @@ using TruthGate_Web.Models;
 using TruthGate_Web.Services;
 using TruthGate_Web.Utils;
 using TruthGate_Web.Interfaces;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Net.Http.Headers;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace TruthGate_Web.Controllers
 {
+
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+    public sealed class DisableFormValueModelBindingAttribute : Attribute, IResourceFilter
+    {
+        public void OnResourceExecuting(ResourceExecutingContext context)
+        {
+            var factories = context.ValueProviderFactories;
+            factories.RemoveType<FormValueProviderFactory>();
+            factories.RemoveType<FormFileValueProviderFactory>();
+            factories.RemoveType<JQueryFormValueProviderFactory>();
+        }
+
+        public void OnResourceExecuted(ResourceExecutedContext context) { }
+    }
+
     [ApiController]
     [Route("api/truthgate/v1/admin")]
     [ServiceFilter(typeof(AdminApiKeyOnlyFilter))]
+    [DisableFormValueModelBinding] // <- critical
+    [DisableRequestSizeLimit]
+    [RequestFormLimits(ValueCountLimit = int.MaxValue, MultipartBodyLengthLimit = long.MaxValue)]
     public class AdminController : ControllerBase
     {
         private readonly ITruthGatePublishService _svc;
@@ -23,10 +45,30 @@ namespace TruthGate_Web.Controllers
         [RequestFormLimits(ValueCountLimit = int.MaxValue, MultipartBodyLengthLimit = long.MaxValue)]
         public async Task<IActionResult> Publish(string domain, CancellationToken ct)
         {
-            var form = await Request.ReadFormAsync(ct);
+            // Expect multipart/form-data
+            if (!MediaTypeHeaderValue.TryParse(Request.ContentType, out var mediaType))
+                return BadRequest("Missing or invalid Content-Type.");
+
+            var boundary = HeaderUtilities.RemoveQuotes(mediaType.Boundary).Value;
+            if (string.IsNullOrWhiteSpace(boundary))
+                return BadRequest("Missing multipart boundary.");
+
+            var reader = new MultipartReader(boundary, Request.Body)
+            {
+                BodyLengthLimit = long.MaxValue,   // section size (default ~128MB)
+                HeadersCountLimit = 512,             // many clients repeat headers
+                HeadersLengthLimit = 256 * 1024,      // long filenames / relpaths
+                                                      // BufferSize       = 64 * 1024,       // optional: larger line buffer
+            };
+
+
             try
             {
-                var (jobId, count) = await _svc.PublishFromFormAsync(domain, form, ct);
+                var (jobId, count) = await _svc.PublishFromMultipartStreamAsync(
+                    domain: domain,
+                    reader: reader,
+                    ct: ct);
+
                 return Accepted(new { jobId, staged = true, files = count });
             }
             catch (InvalidOperationException ex)

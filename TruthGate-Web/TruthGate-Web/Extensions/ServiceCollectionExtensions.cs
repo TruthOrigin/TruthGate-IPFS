@@ -66,8 +66,8 @@ namespace TruthGate_Web.Extensions
                 });
             });
 
-            services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.SmallestSize);
-            services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.SmallestSize);
+            services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+            services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
             return services;
         }

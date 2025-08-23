@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using TruthGate_Web.Endpoints;
+using TruthGate_Web.Models;
 using TruthGate_Web.Services;
 
 namespace TruthGate_Web.Utils
@@ -277,16 +278,22 @@ namespace TruthGate_Web.Utils
         }
 
         public static async Task FilesRmIfExistsAsync(
-       string mfsPath,
-       IHttpClientFactory http,
-       IApiKeyProvider keys,
-       CancellationToken ct = default)
+    string mfsPath,
+    IHttpClientFactory http,
+    IApiKeyProvider keys,
+    bool recursive = false,
+    CancellationToken ct = default)
         {
             var norm = IpfsGateway.NormalizeMfs(mfsPath);
             var rest = $"/api/v0/files/rm?arg={Uri.EscapeDataString(norm)}";
-            using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, http, keys, method: "POST", ct: ct);
-            // ignore non-2xx: it simply didn't exist
+            if (recursive) rest += "&recursive=true";
+
+            using var res = await ApiProxyEndpoints.SendProxyApiRequest(
+                rest, http, keys, method: "POST", ct: ct);
+
+            // Intentionally ignore non-2xx to “didn’t exist” / partial cleanup situations
         }
+
 
         public static async Task EnsureMfsFolderExistsAsync(
             string mfsPath,
@@ -326,12 +333,12 @@ namespace TruthGate_Web.Utils
         }
 
         public static async Task FilesWriteAsync(
-            string mfsPath,
-            Stream data,
-            IHttpClientFactory http,
-            IApiKeyProvider keys,
-            string? contentType = "application/octet-stream",
-            CancellationToken ct = default)
+    string mfsPath,
+    Stream data,
+    IHttpClientFactory http,
+    IApiKeyProvider keys,
+    string? contentType = "application/octet-stream",
+    CancellationToken ct = default)
         {
             var path = IpfsGateway.NormalizeMfs(mfsPath);
 
@@ -341,26 +348,39 @@ namespace TruthGate_Web.Utils
             await FilesMkdirAsync(parent, http, keys, ct, parents: true);
 
             // Replace existing file to avoid truncate edge cases
-            await FilesRmIfExistsAsync(path, http, keys, ct);
+            await FilesRmIfExistsAsync(path, http, keys, recursive: false, ct);
 
             var rest = $"/api/v0/files/write?arg={Uri.EscapeDataString(path)}&create=true&parents=true";
 
-            using var form = new MultipartFormDataContent();
-            using var filePart = new StreamContent(data);
+            // Wrap to avoid disposing the caller's stream
+            var nonDisposing = new NonDisposingStream(data);
+            var filePart = new StreamContent(nonDisposing);
             filePart.Headers.ContentType = BuildContentType(contentType);
 
+            var form = new MultipartFormDataContent();
             var leaf = System.IO.Path.GetFileName(path);
             form.Add(filePart, "data", string.IsNullOrEmpty(leaf) ? "blob" : leaf);
 
-            using var res = await ApiProxyEndpoints.SendProxyApiRequest(
-                rest, http, keys, content: form, method: "POST", ct: ct);
-
-            if (!res.IsSuccessStatusCode)
+            try
             {
-                var body = await res.Content.ReadAsStringAsync(ct);
-                throw new InvalidOperationException($"files/write failed '{path}' ({(int)res.StatusCode}) — {body}");
+                using var res = await ApiProxyEndpoints.SendProxyApiRequest(
+                    rest, http, keys, content: form, method: "POST", ct: ct);
+
+                if (!res.IsSuccessStatusCode)
+                {
+                    var body = await res.Content.ReadAsStringAsync(ct);
+                    throw new InvalidOperationException($"files/write failed '{path}' ({(int)res.StatusCode}) — {body}");
+                }
+            }
+            finally
+            {
+                // Dispose the HttpContent wrappers, but NOT the caller's stream
+                form.Dispose();       // disposes filePart and nonDisposing (which is a no-op)
+                filePart.Dispose();   // redundant, but explicit is fine
+                                      // do NOT dispose 'data' here
             }
         }
+
 
 
         public static async Task FilesCpFromIpfsAsync(string cid, string destMfs, IHttpClientFactory http, IApiKeyProvider keys)
