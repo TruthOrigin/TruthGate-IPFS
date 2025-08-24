@@ -36,213 +36,228 @@
         };
     </script>
 
-    <script>
-        window.TruthGateUpload = (function () {
+   <script>
+  window.TruthGateUpload = (function () {
 
-          function canStream() {
-            try {
-              return typeof DotNet !== 'undefined'
-                && typeof DotNet.createJSStreamReference === 'function';
-            } catch { return false; }
-          }
+    function canStream() {
+      try {
+        return typeof DotNet !== 'undefined'
+          && typeof DotNet.createJSStreamReference === 'function';
+      } catch { return false; }
+    }
 
-          async function safeInvoke(dotnet, method, payload) {
-            try { await dotnet.invokeMethodAsync(method, payload); }
-            catch (err) {
-              console.error(`[TruthGateUpload] invoke ${method} failed:`, err);
-              alert(`Upload JS error while calling ${method}. Check console.`);
-            }
-          }
+    async function safeInvoke(dotnet, method, payload) {
+      try { await dotnet.invokeMethodAsync(method, payload); }
+      catch (err) {
+        console.error(`[TruthGateUpload] invoke ${method} failed:`, err);
+        alert(`Upload JS error while calling ${method}. Check console.`);
+      }
+    }
 
-          // --- NEW: robust directory/file enumeration that supports both APIs ---
-          async function enumerateDataTransfer(dt) {
-            const out = [];
+    // --- robust directory/file enumeration that supports both APIs ---
+    async function enumerateDataTransfer(dt) {
+      const out = [];
 
-            const items = Array.from(dt.items || []);
-            const filesList = Array.from(dt.files || []);
-            console.log('[TruthGateUpload] dt.items:', items.length, 'dt.files:', filesList.length);
+      const items = Array.from(dt.items || []);
+      const filesList = Array.from(dt.files || []);
+      console.log('[TruthGateUpload] dt.items:', items.length, 'dt.files:', filesList.length);
 
-            // Prefer File System Access API if available on items
-            if (items.length && typeof items[0]?.getAsFileSystemHandle === 'function') {
-              console.log('[TruthGateUpload] Using File System Access API');
-              // Walk handles recursively
-              for (const it of items) {
-                if (it.kind !== 'file') continue;
-                const handle = await it.getAsFileSystemHandle();
-                if (!handle) continue;
-                await walkHandle(handle, '', out);
-              }
-              return out;
-            }
+      // Prefer File System Access API if available on items
+      if (items.length && typeof items[0]?.getAsFileSystemHandle === 'function') {
+        console.log('[TruthGateUpload] Using File System Access API');
+        // Walk handles recursively
+        for (const it of items) {
+          if (it.kind !== 'file') continue;
+          const handle = await it.getAsFileSystemHandle();
+          if (!handle) continue;
+          await walkHandle(handle, '', out);
+        }
+        return out;
+      }
 
-            // Fallback: legacy webkit entries
-            if (items.length && typeof items[0]?.webkitGetAsEntry === 'function') {
-              console.log('[TruthGateUpload] Using webkitGetAsEntry');
-              const queue = [];
-              for (const it of items) {
-                if (it.kind !== 'file') continue;
-                const entry = it.webkitGetAsEntry();
-                if (entry) queue.push({ entry, path: '' });
-              }
-              while (queue.length) {
-                const { entry, path } = queue.shift();
-                if (entry.isFile) {
-                  const file = await new Promise(res => entry.file(res));
-                  out.push({ file, relPath: path + entry.name });
-                } else if (entry.isDirectory) {
-                  const reader = entry.createReader();
-                  await new Promise(done => {
-                    const read = () => reader.readEntries(entries => {
-                      if (!entries.length) return done();
-                      for (const e of entries) queue.push({ entry: e, path: path + entry.name + '/' });
-                      read();
-                    });
-                    read();
-                  });
-                }
-              }
-              return out;
-            }
-
-            // Last resort: plain files (some browsers when dragging files, not folders)
-            if (filesList.length) {
-              console.log('[TruthGateUpload] Using dt.files fallback');
-              for (const f of filesList) out.push({ file: f, relPath: f.webkitRelativePath || f.name });
-            }
-            return out;
-          }
-
-          // NEW: File System Access walker
-          async function walkHandle(handle, base, out) {
-            if (handle.kind === 'file') {
-              const file = await handle.getFile();
-              out.push({ file, relPath: base + file.name });
-            } else if (handle.kind === 'directory') {
-              for await (const entry of handle.values()) {
-                await walkHandle(entry, base + handle.name + '/', out);
-              }
-            }
-          }
-
-                  const CHUNK = 50; // tune as needed
-
-        async function sendInChunks(dotnet, method, array, chunkSize = CHUNK) {
-          for (let i = 0; i < array.length; i += chunkSize) {
-            const slice = array.slice(i, i + chunkSize);
-            await dotnet.invokeMethodAsync(method, slice);
+      // Fallback: legacy webkit entries
+      if (items.length && typeof items[0]?.webkitGetAsEntry === 'function') {
+        console.log('[TruthGateUpload] Using webkitGetAsEntry');
+        const queue = [];
+        for (const it of items) {
+          if (it.kind !== 'file') continue;
+          const entry = it.webkitGetAsEntry();
+          if (entry) queue.push({ entry, path: '' });
+        }
+        while (queue.length) {
+          const { entry, path } = queue.shift();
+          if (entry.isFile) {
+            const file = await new Promise(res => entry.file(res));
+            out.push({ file, relPath: path + entry.name });
+          } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            await new Promise(done => {
+              const read = () => reader.readEntries(entries => {
+                if (!entries.length) return done();
+                for (const e of entries) queue.push({ entry: e, path: path + entry.name + '/' });
+                read();
+              });
+              read();
+            });
           }
         }
+        return out;
+      }
 
-        async function onInputChange(e, dotnet) {
-          try {
-            const input = e.currentTarget;
-            const files = Array.from(input.files || []);
-            console.log('[TruthGateUpload] input change files:', files.length);
+      // Last resort: plain files (some browsers when dragging files, not folders)
+      if (filesList.length) {
+        console.log('[TruthGateUpload] Using dt.files fallback');
+        for (const f of filesList) out.push({ file: f, relPath: f.webkitRelativePath || f.name });
+      }
+      return out;
+    }
 
-            const streaming = canStream();
-            const payload = files.map(file => ({
-              StreamRef: streaming ? DotNet.createJSStreamReference(file) : null,
-              Name: file.name,
-              RelPath: file.webkitRelativePath || file.name,
-              ContentType: file.type || 'application/octet-stream',
-              Size: file.size ?? 0
-            }));
-
-            await dotnet.invokeMethodAsync('BeginAddFiles');
-            await sendInChunks(dotnet, 'AppendDroppedFiles', payload);
-            await dotnet.invokeMethodAsync('EndAddFiles');
-
-            input.value = '';
-          } catch (err) {
-            console.error('[TruthGateUpload] onInputChange error:', err);
-            alert('Upload JS error on input change. Check console.');
-          }
+    // File System Access walker
+    async function walkHandle(handle, base, out) {
+      if (handle.kind === 'file') {
+        const file = await handle.getFile();
+        out.push({ file, relPath: base + file.name });
+      } else if (handle.kind === 'directory') {
+        for await (const entry of handle.values()) {
+          await walkHandle(entry, base + handle.name + '/', out);
         }
+      }
+    }
 
-        async function onDrop(e, dotnet) {
-          e.preventDefault();
-          e.stopPropagation();
-          e.currentTarget.classList.remove('active');
-          await safeInvoke(dotnet, 'ReceiveDropState', 'leave');
+    const CHUNK = 50; // tune as needed
 
-          try {
-            const files = await enumerateDataTransfer(e.dataTransfer);
-            console.log('[TruthGateUpload] collected (drop) files:', files.length);
-            const streaming = canStream();
+    // NEW: safely build payload entries and avoid 0-byte streams
+    function makePayloadEntry(file, streaming) {
+      const size = typeof file.size === 'number' ? file.size : 0;
+      const stream = (streaming && size > 0)
+        ? DotNet.createJSStreamReference(file)
+        : null;
 
-            const payload = files.map(({ file, relPath }) => ({
-              StreamRef: streaming ? DotNet.createJSStreamReference(file) : null,
-              Name: file.name,
-              RelPath: relPath || file.webkitRelativePath || file.name,
-              ContentType: file.type || 'application/octet-stream',
-              Size: file.size ?? 0
-            }));
+      return {
+        StreamRef: stream,
+        Name: file.name,
+        RelPath: file.webkitRelativePath || file.name,
+        ContentType: file.type || 'application/octet-stream',
+        Size: size
+      };
+    }
 
-            console.log('[TruthGateUpload] sample rels (drop):', payload.slice(0, 8).map(p => p.RelPath));
-
-            await dotnet.invokeMethodAsync('BeginAddFiles');
-            await sendInChunks(dotnet, 'AppendDroppedFiles', payload);
-            await dotnet.invokeMethodAsync('EndAddFiles');
-          } catch (err) {
-            console.error('[TruthGateUpload] onDrop error:', err);
-            alert('Upload JS error on drop. Check console.');
-          }
+    async function sendInChunks(dotnet, method, array, chunkSize = CHUNK) {
+      for (let i = 0; i < array.length; i += chunkSize) {
+        const slice = array.slice(i, i + chunkSize);
+        if (slice.length) {
+          await dotnet.invokeMethodAsync(method, slice);
         }
+      }
+    }
 
-          function enableDirectory(inputEl) {
-            if (!inputEl) return;
-            inputEl.setAttribute('webkitdirectory', '');
-            inputEl.setAttribute('directory', '');
-            inputEl.setAttribute('multiple', '');
-          }
+    async function onInputChange(e, dotnet) {
+      try {
+        const input = e.currentTarget;
+        const files = Array.from(input.files || []);
+        console.log('[TruthGateUpload] input change files:', files.length);
 
-          function addHover(el, dotnet) {
-            const enter = e => { e.preventDefault(); el.classList.add('active'); dotnet.invokeMethodAsync('ReceiveDropState', 'enter'); };
-            const over  = e => { e.preventDefault(); };
-            const leave = e => { el.classList.remove('active'); dotnet.invokeMethodAsync('ReceiveDropState', 'leave'); };
-            el.addEventListener('dragenter', enter);
-            el.addEventListener('dragover',  over);
-            el.addEventListener('dragleave', leave);
-            el.__tgHoverHandlers = { enter, over, leave };
-          }
+        const streaming = canStream();
+        const payload = files
+          .map(file => makePayloadEntry(file, streaming))
+          .filter(p => p.Size > 0); // hard-filter zero-byte files
 
-          function removeHover(el) {
-            if (!el.__tgHoverHandlers) return;
-            const { enter, over, leave } = el.__tgHoverHandlers;
-            el.removeEventListener('dragenter', enter);
-            el.removeEventListener('dragover',  over);
-            el.removeEventListener('dragleave', leave);
-            delete el.__tgHoverHandlers;
-          }
+        await dotnet.invokeMethodAsync('BeginAddFiles');
+        await sendInChunks(dotnet, 'AppendDroppedFiles', payload);
+        await dotnet.invokeMethodAsync('EndAddFiles');
 
-          function openPicker(inputEl) { if (inputEl) inputEl.click(); }
+        input.value = '';
+      } catch (err) {
+        console.error('[TruthGateUpload] onInputChange error:', err);
+        alert('Upload JS error on input change. Check console.');
+      }
+    }
 
-          function init(dropEl, dotnetRef, inputEl) {
-            if (inputEl) {
-              enableDirectory(inputEl);
-              const handler = ev => onInputChange(ev, dotnetRef);
-              inputEl.addEventListener('change', handler);
-              inputEl.__tgChangeHandler = handler;
-            }
-            if (dropEl) {
-              addHover(dropEl, dotnetRef);
-              const d = e => onDrop(e, dotnetRef);
-              dropEl.addEventListener('drop', d);
-              dropEl.__tgDropHandler = d;
-            }
-          }
+    async function onDrop(e, dotnet) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.classList.remove('active');
+      await safeInvoke(dotnet, 'ReceiveDropState', 'leave');
 
-          function dispose(dropEl) {
-            if (dropEl?.__tgDropHandler) {
-              dropEl.removeEventListener('drop', dropEl.__tgDropHandler);
-              delete dropEl.__tgDropHandler;
-            }
-            removeHover(dropEl);
-          }
+      try {
+        const files = await enumerateDataTransfer(e.dataTransfer);
+        console.log('[TruthGateUpload] collected (drop) files:', files.length);
+        const streaming = canStream();
 
-          return { init, dispose, openPicker };
-        })();
-    </script>
+        const payload = files
+          .map(({ file, relPath }) => {
+            const p = makePayloadEntry(file, streaming);
+            if (relPath) p.RelPath = relPath; // preserve discovered relPath
+            return p;
+          })
+          .filter(p => p.Size > 0); // hard-filter zero-byte files
+
+        console.log('[TruthGateUpload] sample rels (drop):', payload.slice(0, 8).map(p => p.RelPath));
+
+        await dotnet.invokeMethodAsync('BeginAddFiles');
+        await sendInChunks(dotnet, 'AppendDroppedFiles', payload);
+        await dotnet.invokeMethodAsync('EndAddFiles');
+      } catch (err) {
+        console.error('[TruthGateUpload] onDrop error:', err);
+        alert('Upload JS error on drop. Check console.');
+      }
+    }
+
+    function enableDirectory(inputEl) {
+      if (!inputEl) return;
+      inputEl.setAttribute('webkitdirectory', '');
+      inputEl.setAttribute('directory', '');
+      inputEl.setAttribute('multiple', '');
+    }
+
+    function addHover(el, dotnet) {
+      const enter = e => { e.preventDefault(); el.classList.add('active'); dotnet.invokeMethodAsync('ReceiveDropState', 'enter'); };
+      const over  = e => { e.preventDefault(); };
+      const leave = e => { el.classList.remove('active'); dotnet.invokeMethodAsync('ReceiveDropState', 'leave'); };
+      el.addEventListener('dragenter', enter);
+      el.addEventListener('dragover',  over);
+      el.addEventListener('dragleave', leave);
+      el.__tgHoverHandlers = { enter, over, leave };
+    }
+
+    function removeHover(el) {
+      if (!el.__tgHoverHandlers) return;
+      const { enter, over, leave } = el.__tgHoverHandlers;
+      el.removeEventListener('dragenter', enter);
+      el.removeEventListener('dragover',  over);
+      el.removeEventListener('dragleave', leave);
+      delete el.__tgHoverHandlers;
+    }
+
+    function openPicker(inputEl) { if (inputEl) inputEl.click(); }
+
+    function init(dropEl, dotnetRef, inputEl) {
+      if (inputEl) {
+        enableDirectory(inputEl);
+        const handler = ev => onInputChange(ev, dotnetRef);
+        inputEl.addEventListener('change', handler);
+        inputEl.__tgChangeHandler = handler;
+      }
+      if (dropEl) {
+        addHover(dropEl, dotnetRef);
+        const d = e => onDrop(e, dotnetRef);
+        dropEl.addEventListener('drop', d);
+        dropEl.__tgDropHandler = d;
+      }
+    }
+
+    function dispose(dropEl) {
+      if (dropEl?.__tgDropHandler) {
+        dropEl.removeEventListener('drop', dropEl.__tgDropHandler);
+        delete dropEl.__tgDropHandler;
+      }
+      removeHover(dropEl);
+    }
+
+    return { init, dispose, openPicker };
+  })();
+</script>
+
 
 
 

@@ -236,15 +236,23 @@
     {
         foreach (var f in files)
         {
-            if (f.StreamRef is null) continue; // optional: set _error if null
+            // Skip anything that can't be streamed safely
+            if (f.Size <= 0) continue;
+            if (f.StreamRef is null) continue;
+
             var rel = NormalizeRelPathLoose(f.RelPath) ?? NormalizeRelPathLoose(f.Name) ?? f.Name;
-            var wrapped = new JsBrowserFile(f.StreamRef, f.Name,
+            var wrapped = new JsBrowserFile(
+                f.StreamRef,
+                f.Name,
                 string.IsNullOrWhiteSpace(f.ContentType) ? "application/octet-stream" : f.ContentType,
-                f.Size);
+                f.Size
+            );
+
             _selected.Add((wrapped, rel!));
         }
         return Task.CompletedTask;
     }
+
 
     [JSInvokable]
     public Task EndAddFiles()
