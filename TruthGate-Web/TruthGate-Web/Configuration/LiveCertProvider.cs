@@ -85,8 +85,9 @@ namespace TruthGate_Web.Configuration
 
             var cfg = _config.Get();
             var authorized = cfg.Domains
-                .Where(d => bool.TryParse(d.UseSSL, out var ok) && ok)
-                .Select(d => new { d.IpnsPeerId, d.IpnsKeyName });
+                   .Select(d => new { d.IpnsPeerId, d.IpnsKeyName })
+                   .Where(x => !string.IsNullOrWhiteSpace(x.IpnsPeerId)
+                            || !string.IsNullOrWhiteSpace(x.IpnsKeyName));
 
             foreach (var a in authorized)
             {
@@ -101,6 +102,7 @@ namespace TruthGate_Web.Configuration
 
             return false;
         }
+
 
 
         /// <summary>
