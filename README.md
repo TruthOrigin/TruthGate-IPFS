@@ -15,7 +15,7 @@
 - **Auto SSL & Domains** – Custom domains with one-step HTTPS.
 - **Drag-and-Drop Publishing** – Deploy WASM, SPAs, and Blazor apps in seconds.
 - **Web2/Web3 Hybrid Hosting** – Serve both decentralized and traditional users.
-- 🛡**Hardened Edge Gateway** – Secure IPFS exposure without the risks.
+- **Hardened Edge Gateway** – Secure IPFS exposure without the risks.
 
 ---
 
