@@ -41,7 +41,7 @@ Head to **[truthgate.io](https://truthgate.io)** for installation, configuration
 
 ---
 
-## ❤️ A Note from the Creator
+## A Note from the Creator
 
 I built this out of frustration.  
 
