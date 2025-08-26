@@ -162,6 +162,16 @@ if (!builder.Environment.IsDevelopment())
 
     builder.Services.AddHostedService<ConfigWatchAndIssueService>();
 
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("TruthGatePublic", policy =>
+            policy
+                .AllowAnyOrigin()
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+        );
+    });
+
     // === Kestrel ===
     builder.WebHost.ConfigureKestrel(options =>
     {
@@ -232,6 +242,16 @@ app.Logger.LogInformation("ContentRoot: {cr}", app.Environment.ContentRootPath);
 app.Logger.LogInformation("WebRoot:     {wr}", app.Environment.WebRootPath);
 app.Logger.LogInformation("BaseDir:     {bd}", AppContext.BaseDirectory);
 
+app.UseCors(cors => cors
+.AllowAnyMethod()
+.AllowAnyHeader()
+.SetIsOriginAllowed(origin => true)
+.AllowCredentials()
+.WithExposedHeaders("Grpc-Status", "Grpc-Message", "Grpc-Encoding", "Grpc-Accept-Encoding")
+);
+
+app.UseCors("TruthGatePublic");
+
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor |
@@ -248,7 +268,7 @@ app.UseAuthorization();
 app.UseAntiforgery();
 
 
-app.MapControllers();
+app.MapControllers().RequireCors("TruthGatePublic"); ;
 
 // Domain to IPFS gateway (host-mapped, SPA fallback logic, etc.)
 app.UseDomainGateway();
