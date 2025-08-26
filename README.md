@@ -11,7 +11,7 @@
 - **Secure User Logins** – Role-based accounts protect access.
 - **API Key Management** – Scoped tokens for programmatic control.
 - **Clean GUI** – Manage users, domains, and publishing in minutes.
-- **/ipfs/ + /webui/** – Native IPFS routes, now behind auth + HTTPS.
+- **`/ipfs/` + `/webui/`** – Native IPFS routes, now behind auth + HTTPS.
 - **Auto SSL & Domains** – Custom domains with one-step HTTPS.
 - **Drag-and-Drop Publishing** – Deploy WASM, SPAs, and Blazor apps in seconds.
 - **Web2/Web3 Hybrid Hosting** – Serve both decentralized and traditional users.
