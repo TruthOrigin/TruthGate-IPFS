@@ -25,4 +25,10 @@
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="9.0.8" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="TgpFiles\RedirectPage.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

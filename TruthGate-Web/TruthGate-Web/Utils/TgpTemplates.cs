@@ -26,20 +26,23 @@ namespace TruthGate_Web.Utils
   const REDIRECT_DOC = 'QmRAy95PUSX58yNRLh5grYuz3x5JLwmF4UqJnBtQeqZK4u';
   const WATCHDOG_MS = 3500;
 
-  function isIpfsLikeHost(host) {{ return /\.ipns\./.test(host) || /\.ipfs\./.test(host); }}
+function hasSubdomainLocalhost(host) {{
+  if (!host.endsWith('.localhost')) return false;
+  const labels = host.split('.');
+  return labels.length >= 2 && labels[labels.length - 1] === 'localhost';
+}}
 
-  function ipfsDetected() {{
-    try {{
-      if (isIpfsLikeHost(location.hostname)) return true;
-      if (typeof window.ipfs !== 'undefined') return true;
-      if (typeof window.ipfsCompanion !== 'undefined') return true;
-      const looksIpfsPath = /\/(ipfs|ipns)\//.test(location.pathname);
-      if (navigator.serviceWorker && navigator.serviceWorker.controller && looksIpfsPath) return true;
-    }} catch (e) {{}}
-    return false;
-  }}
+function ipfsDetected() {{
+  try {{
+    if (hasSubdomainLocalhost(location.hostname)) return true;
 
-  const preferTopNav = ipfsDetected(); // ← key change
+    if (typeof window.ipfs !== 'undefined') return true;
+    if (typeof window.ipfsCompanion !== 'undefined') return true;
+  }} catch {{}}
+  return false;
+}}
+
+  const preferTopNav = ipfsDetected();
 
   async function isLiveHead(url, ms) {{
     try {{
@@ -86,12 +89,9 @@ namespace TruthGate_Web.Utils
 
   function topNavigateWithGuard(src, fallbackHref) {{
     try {{
-      // Try to leave no history entry so IPNS URL isn’t stuck in back stack
       if (typeof location.replace === 'function') location.replace(src); else location.href = src;
-      // Watchdog: if we are still on the same origin after a moment, show fallback UI
       setTimeout(() => {{
         try {{
-          // If we’re still here (did not navigate), show fallback
           showBlockedMessage(fallbackHref, src);
         }} catch (e) {{
           showBlockedMessage(fallbackHref, src);
@@ -150,7 +150,7 @@ namespace TruthGate_Web.Utils
       resolveweb3domain: '0'
     }});
     const redirectUrl = `https://ipfs.io/ipfs/{RedirectDoc}?redirectURL=${{encodeURIComponent(current)}}&${{params.toString()}}`;
-    const directCid   = 'https://ipfs.io/ipfs/' + encodeURIComponent(current);
+    const directCid   = 'https://dweb.link/ipfs/' + encodeURIComponent(current);
 
     if (preferTopNav) {{
       // Let Companion rewrite to localhost in top window; avoids localhost-in-iframe blocks
