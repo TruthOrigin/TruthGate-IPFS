@@ -1,0 +1,177 @@
+﻿@using System.Net
+@using Microsoft.EntityFrameworkCore
+@using MudBlazor
+@using TruthGate_Web.Security
+@using TruthGate_Web.Security.Models
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(Message))
+        {
+            <MudText Typo="Typo.body1" Class="mb-2">@Message</MudText>
+        }
+
+        <MudForm @ref="_form" Validation="Validate">
+            <MudStack Spacing="2">
+                <MudTextField @bind-Value="_ip"
+                              Label="IP address"
+                              Placeholder="e.g., 203.0.113.42 or ::ffff:203.0.113.42"
+                              Immediate="true"
+                              Required="true"
+                              @onkeydown="OnKeyDown" />
+
+                @if (!string.IsNullOrWhiteSpace(_error))
+                {
+                    <MudText Color="Color.Error" Class="mt-1">@_error</MudText>
+                }
+
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                    <MudButton OnClick="RunSearch" Color="Color.Primary" Variant="Variant.Filled">Search</MudButton>
+                    <MudButton OnClick="UnbanNow" Color="Color.Error" Variant="Variant.Outlined" Disabled="@(!_isBanned.GetValueOrDefault())">
+                        Unban IP
+                    </MudButton>
+                    <MudText Typo="Typo.caption" Class="ml-2">
+                        (Banned/Whitelist reflect live in-memory state)
+                    </MudText>
+                </MudStack>
+
+                @if (_searched)
+                {
+                    <MudDivider Class="my-2" />
+
+                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                        <MudChip T="string" Color="@(_isBanned == true ? Color.Error : Color.Default)" Variant="Variant.Filled">
+                            Banned: @(_isBanned?.ToString() ?? "?")
+                        </MudChip>
+                        <MudChip T="string" Color="@(_isWhitelisted == true ? Color.Success : Color.Default)" Variant="Variant.Filled">
+                            Whitelisted: @(_isWhitelisted?.ToString() ?? "?")
+                        </MudChip>
+                    </MudStack>
+
+                    <MudText Typo="Typo.subtitle2" Class="mt-2">Recent ban records (DB, latest 10)</MudText>
+
+                    <MudDataGrid T="BanDto" Items="@_recent" Dense="true" Hover="true" Bordered="true" Elevation="0" Sortable="false" Filterable="false">
+                        <Columns>
+                            <TemplateColumn Title="Created (UTC)">
+                                <CellTemplate>@context.Item.CreatedUtc.ToString("u")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Expires (UTC)">
+                                <CellTemplate>@context.Item.ExpiresUtc.ToString("u")</CellTemplate>
+                            </TemplateColumn>
+                            <PropertyColumn  Property="x => x.Scope" Title="Scope" />
+                            <TemplateColumn Title="Type">
+                                <CellTemplate>@(context.Item.IsTrueBan ? "TRUE" : "Soft")</CellTemplate>
+                            </TemplateColumn>
+                            <PropertyColumn  Property="x => x.ReasonCode" Title="Reason" />
+                        </Columns>
+                    </MudDataGrid>
+                }
+            </MudStack>
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Default">Close</MudButton>
+        <MudButton OnClick="RunSearch" Color="Color.Primary" Variant="Variant.Filled"
+                   Disabled="@string.IsNullOrWhiteSpace(_ip)">
+            Search
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    // Optional text above form
+    [Parameter] public string? Message { get; set; }
+
+    // For convenience from caller
+    [Parameter] public string? InitialIp { get; set; }
+
+    [Inject] public IRateLimiterService RateSvc { get; set; } = default!;
+    [Inject] public IDbContextFactory<RateLimiterDbContext> DbFactory { get; set; } = default!;
+    [Inject] public ISnackbar Snackbar { get; set; } = default!;
+
+    private MudForm _form = default!;
+    private string _ip = "";
+    private string? _error;
+
+    private bool _searched;
+    private bool? _isBanned;
+    private bool? _isWhitelisted;
+    private List<BanDto> _recent = new();
+
+    protected override void OnInitialized()
+    {
+        _ip = InitialIp?.Trim() ?? "";
+    }
+
+    private IEnumerable<string> Validate()
+    {
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_ip))
+        {
+            _error = "Please enter an IP address.";
+            yield return _error;
+            yield break;
+        }
+        if (!IPAddress.TryParse(_ip, out _))
+        {
+            _error = "Invalid IP format (v4 or v6 required).";
+            yield return _error;
+        }
+    }
+
+    private async Task RunSearch()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        try
+        {
+            var ip = _ip.Trim();
+            _isBanned = RateSvc.IsBanned(ip);
+            _isWhitelisted = await RateSvc.IsWhitelistedAsync(ip);
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            _recent = await db.Bans.AsNoTracking()
+                .Where(x => x.Ip == ip)
+                .OrderByDescending(x => x.CreatedUtc)
+                .Take(10)
+                .Select(x => new BanDto
+                {
+                    Id = x.Id,
+                    Ip = x.Ip,
+                    Ipv6Prefix = x.IpV6Prefix,
+                    Scope = x.Scope,
+                    IsTrueBan = x.IsTrueBan,
+                    ReasonCode = x.ReasonCode,
+                    CreatedUtc = x.CreatedUtc,
+                    ExpiresUtc = x.ExpiresUtc
+                }).ToListAsync();
+
+            _searched = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Search failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task UnbanNow()
+    {
+        if (string.IsNullOrWhiteSpace(_ip)) return;
+        var ok = await RateSvc.UnbanIpAsync(_ip.Trim());
+        Snackbar.Add(ok ? $"Unbanned {_ip}." : "Nothing to unban.", ok ? Severity.Success : Severity.Info);
+        await RunSearch();
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await RunSearch();
+    }
+}

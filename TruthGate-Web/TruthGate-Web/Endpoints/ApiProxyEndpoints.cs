@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Primitives;
 using System.Net;
 using System.Net.Http;
+using TruthGate_Web.Middleware;
 using TruthGate_Web.Models;
 using TruthGate_Web.Services;
 using TruthGate_Web.Utils;
@@ -177,7 +178,7 @@ namespace TruthGate_Web.Endpoints
                 // 5) Proxy onward
                 var targetUri = RequestHelpers.CombineTarget("api/v0", rest, context);
                 await IpfsGateway.Proxy(context, targetUri, clientFactory);
-            });
+            }).WithMetadata(new AdminProtectedAttribute());
 
 
             return app;

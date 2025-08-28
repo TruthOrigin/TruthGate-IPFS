@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TruthGate-Web.Client", "Tru
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Publish.CLI", "Publish.CLI\Publish.CLI.csproj", "{C2DC8E1B-ED65-401F-A823-B870495B8D82}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Test.TruthGate", "Test.TruthGate\Test.TruthGate.csproj", "{ADAAD087-3264-4DDC-AA8E-EBE9A676C25B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,10 @@ Global
 		{C2DC8E1B-ED65-401F-A823-B870495B8D82}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C2DC8E1B-ED65-401F-A823-B870495B8D82}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C2DC8E1B-ED65-401F-A823-B870495B8D82}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ADAAD087-3264-4DDC-AA8E-EBE9A676C25B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ADAAD087-3264-4DDC-AA8E-EBE9A676C25B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ADAAD087-3264-4DDC-AA8E-EBE9A676C25B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ADAAD087-3264-4DDC-AA8E-EBE9A676C25B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

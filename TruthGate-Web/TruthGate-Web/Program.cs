@@ -17,6 +17,8 @@ using TruthGate_Web.Models;
 using TruthGate_Web.Interfaces;
 using Microsoft.AspNetCore.Http.Features;
 using TruthGate_Web.Models.Metrics;
+using TruthGate_Web.Security;
+using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // Services
@@ -41,9 +43,32 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<ApiKeyService>());
 
 builder.Services.AddServerSideBlazor()
     .AddCircuitOptions(o => o.DetailedErrors = true);
-// Program.cs / Startup
+
 builder.Services.AddSingleton<IConfigService, ConfigService>();
-builder.Services.AddHostedService(sp => (ConfigService)sp.GetRequiredService<IConfigService>());
+
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    // Only wire the hosted service in real environments
+    builder.Services.AddHostedService(sp =>
+        (ConfigService)sp.GetRequiredService<IConfigService>());
+}
+
+
+
+
+builder.Services.Configure<RateLimiterOptions>(opt =>
+{
+    opt.Public.PerIpPerMinute = 300;
+    opt.Public.GlobalTiers = new[] { (2000, 200), (8000, 100), (16000, 30) };
+    opt.Gateway.FreePerMinute = 400;
+    opt.Gateway.HourlyOverage = 3200;
+    opt.Gateway.BanOnExhaustion = TimeSpan.FromHours(4);
+    opt.Gateway.AutoWhitelistOnAuthOrValidKey = true;
+});
+
+
+builder.Services.AddTruthGateRateLimiter();
+
 
 builder.Services.AddScoped<AdminApiKeyOnlyFilter>();
 
@@ -262,11 +287,14 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 // Pipeline
 app.UseStandardErrorPipeline();
 
+app.UseGatewayRateProtection();
+
 // Auth
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
 
+app.UseTruthGateRateLimiter();
 
 app.MapControllers().RequireCors("TruthGatePublic"); ;
 
@@ -278,7 +306,10 @@ app.UseNonMappedDomainAuthGuard();
 
 
 // Static + components
-app.MapStaticAssets();
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.MapStaticAssets();
+}
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode()
     .AddInteractiveWebAssemblyRenderMode()
@@ -288,5 +319,13 @@ app.MapRazorComponents<App>()
 app.MapTruthGateAuthEndpoints();
 app.MapTruthGateIpfsEndpoints();
 app.MapTruthGateApiProxyEndpoints();
+
+
+using (var scope = app.Services.CreateScope())
+{
+    var dbf = scope.ServiceProvider.GetRequiredService<IDbContextFactory<RateLimiterDbContext>>();
+    await using var db = await dbf.CreateDbContextAsync();
+    await db.Database.MigrateAsync();
+}
 
 app.Run();

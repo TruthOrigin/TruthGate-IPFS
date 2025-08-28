@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.ResponseCompression;
 using System.IO.Compression;
 using TruthGate_Web.Models;
+using TruthGate_Web.Services;
 
 namespace TruthGate_Web.Extensions
 {

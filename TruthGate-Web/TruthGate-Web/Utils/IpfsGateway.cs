@@ -594,7 +594,7 @@ namespace TruthGate_Web.Utils
     string targetUri,
     IHttpClientFactory clientFactory,
     bool rewriteIndexForCid = false,
-    string? basePrefix = null) // e.g. "/ipfs/<cid>/" or "/ipns/<name>/"
+    string? basePrefix = null, bool isStaticUrl = true) // e.g. "/ipfs/<cid>/" or "/ipns/<name>/"
         {
             var method = context.Request.Method;
             var client = clientFactory.CreateClient();
@@ -643,6 +643,53 @@ namespace TruthGate_Web.Utils
                 context.Response.Headers[header.Key] = header.Value.ToArray();
             foreach (var header in responseMessage.Content.Headers)
                 context.Response.Headers[header.Key] = header.Value.ToArray();
+
+
+            // CACHE POLICY
+            var reqPath = context.Request.Path.Value ?? string.Empty;
+            var ct = context.Response.ContentType ?? responseMessage.Content.Headers.ContentType?.ToString() ?? "";
+            var file = reqPath.AsSpan(); 
+
+            bool IsHtmlShell() =>
+                ct.Contains("text/html", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("\\index.html", StringComparison.OrdinalIgnoreCase);
+
+            bool IsDescriptor() =>
+                reqPath.EndsWith("app.webmanifest", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("manifest.json", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("blazor.boot.json", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("service-worker-assets.js", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("asset-manifest.json", StringComparison.OrdinalIgnoreCase) ||      // CRA
+                reqPath.EndsWith("vite-manifest.json", StringComparison.OrdinalIgnoreCase) ||       // Vite
+                reqPath.Contains("/_next/", StringComparison.OrdinalIgnoreCase) && reqPath.EndsWith("build-manifest.json", StringComparison.OrdinalIgnoreCase); // Next.js
+
+            bool IsServiceWorker() =>
+                reqPath.EndsWith("service-worker.js", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith("sw.js", StringComparison.OrdinalIgnoreCase);
+
+            bool IsWasmOrDll() =>
+                reqPath.EndsWith(".wasm", StringComparison.OrdinalIgnoreCase) ||
+                reqPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
+
+            bool IsUpdateCritical() => IsHtmlShell() || IsDescriptor() || IsServiceWorker();
+
+            // Helper: overwrite Cache-Control cleanly
+            void SetCache(string value)
+            {
+                context.Response.Headers["Cache-Control"] = value;
+                context.Response.Headers.Remove("Pragma");
+            }
+
+            // Apply the rules:
+            if (IsUpdateCritical() || IsWasmOrDll())
+            {
+                SetCache("no-cache, must-revalidate");
+            }
+            else if (isStaticUrl)
+            {
+                SetCache("public, max-age=86400, must-revalidate");
+            }
 
             // Hop-by-hop cleanup
             context.Response.Headers.Remove("transfer-encoding");

@@ -7,6 +7,7 @@ using TruthGate_Web.Utils;
 using Microsoft.AspNetCore.Identity;
 using TruthGate_Web.Services;
 using System.IO;
+using TruthGate_Web.Middleware;
 
 namespace TruthGate_Web.Endpoints
 {
@@ -293,7 +294,7 @@ namespace TruthGate_Web.Endpoints
 
                 await IpfsGateway.Proxy(context, targetUriAuthed, clientFactory, rewriteIndexForCid: rewrite, basePrefix: ipnsPrefix);
 
-            });
+            }); 
 
             // Preflight for /ipns/*
             app.MapMethods("/ipns/{**rest}", new[] { "OPTIONS" }, async context =>

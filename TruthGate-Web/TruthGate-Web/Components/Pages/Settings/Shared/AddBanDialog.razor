@@ -1,0 +1,167 @@
+﻿@using System.Net
+@using MudBlazor
+@using TruthGate_Web.Security
+@using TruthGate_Web.Security.Models
+
+<MudDialog>
+    <DialogContent>
+        @if (!string.IsNullOrWhiteSpace(Message))
+        {
+            <MudText Typo="Typo.body1" Class="mb-2">@Message</MudText>
+        }
+
+        <MudForm @ref="_form" Validation="Validate">
+            <MudStack Spacing="2">
+                <MudSwitch @bind-Value="_usePrefix" Color="Color.Primary" Label="Use IPv6 /64 Prefix?" />
+
+                <MudTextField @bind-Value="_target"
+                              Label="@(_usePrefix ? "Prefix (e.g., 2001:db8:: or 2001:db8::/64)" : "IP (v4/v6) ")"
+                              Placeholder="@(_usePrefix ? "2001:db8::/64" : "203.0.113.42 or ::ffff:203.0.113.42")"
+                              Immediate="true"
+                              Required="true"
+                              @onkeydown="OnKeyDown" />
+
+                <MudSelect T="RateScope" @bind-Value="_scope" Label="Scope" Variant="Variant.Outlined" Dense="true" Class="w-56">
+                    <MudSelectItem Value="RateScope.Public">Public</MudSelectItem>
+                    <MudSelectItem Value="RateScope.Admin">Admin</MudSelectItem>
+                    <MudSelectItem Value="RateScope.Gateway">Gateway</MudSelectItem>
+                    <MudSelectItem Value="RateScope.Global">Global</MudSelectItem>
+                </MudSelect>
+
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                    <MudSwitch @bind-Value="_trueBan" Color="Color.Error" Label="TRUE ban?" />
+                    <MudNumericField T="int" @bind-Value="_durationMinutes" Label="Duration (minutes)" Min="1" Variant="Variant.Outlined" Class="w-44" />
+                </MudStack>
+
+                <MudTextField @bind-Value="_reason"
+                              Label="Reason code"
+                              Placeholder="e.g., MANUAL_BAN"
+                              Immediate="true" />
+
+                @if (!string.IsNullOrWhiteSpace(_error))
+                {
+                    <MudText Color="Color.Error" Class="mt-1">@_error</MudText>
+                }
+            </MudStack>
+        </MudForm>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Default">Cancel</MudButton>
+        <MudButton OnClick="Submit" Color="Color.Primary" Variant="Variant.Filled"
+                   Disabled="@string.IsNullOrWhiteSpace(_target)">
+            Apply
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    // Optional helper text above the form
+    [Parameter] public string? Message { get; set; }
+
+    // Optional defaults from caller
+    [Parameter] public bool UsePrefixDefault { get; set; } = false;
+    [Parameter] public RateScope ScopeDefault { get; set; } = RateScope.Public;
+    [Parameter] public int DurationMinutesDefault { get; set; } = 60;
+    [Parameter] public string ReasonDefault { get; set; } = "MANUAL_BAN";
+
+    [Inject] public IRateLimiterService RateSvc { get; set; } = default!;
+    [Inject] public ISnackbar Snackbar { get; set; } = default!;
+
+    private MudForm _form = default!;
+    private bool _usePrefix;
+    private string? _target;
+    private RateScope _scope;
+    private bool _trueBan;
+    private int _durationMinutes;
+    private string _reason = "MANUAL_BAN";
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _usePrefix = UsePrefixDefault;
+        _scope = ScopeDefault;
+        _durationMinutes = Math.Max(1, DurationMinutesDefault);
+        _reason = string.IsNullOrWhiteSpace(ReasonDefault) ? "MANUAL_BAN" : ReasonDefault;
+    }
+
+    private IEnumerable<string> Validate()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(_target))
+        {
+            _error = "Please provide a target.";
+            yield return _error!;
+            yield break;
+        }
+
+        var t = _target.Trim();
+
+        if (_usePrefix)
+        {
+            // Accept "2001:db8::" or "2001:db8::/64" — the service canonicalizes either
+            var bare = t.Contains('/') ? t[..t.IndexOf('/')] : t;
+            if (!IPAddress.TryParse(bare, out var parsed) || parsed.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                _error = "Invalid IPv6 prefix format.";
+                yield return _error!;
+            }
+        }
+        else
+        {
+            if (!IPAddress.TryParse(t, out _))
+            {
+                _error = "Invalid IP address.";
+                yield return _error!;
+            }
+        }
+
+        if (_durationMinutes <= 0)
+        {
+            _error = "Duration must be at least 1 minute.";
+            yield return _error!;
+        }
+    }
+
+    private async Task Submit()
+    {
+        await _form.Validate();
+        if (!_form.IsValid) return;
+
+        try
+        {
+            var t = _target!.Trim();
+            var dur = TimeSpan.FromMinutes(_durationMinutes);
+            var reason = string.IsNullOrWhiteSpace(_reason) ? (_usePrefix ? "MANUAL_PREFIX_BAN" : "MANUAL_BAN") : _reason;
+
+            bool ok = _usePrefix
+                ? await RateSvc.BanIpv6PrefixAsync(t, dur, _scope, _trueBan, reason)
+                : await RateSvc.BanIpAsync(t, dur, _scope, _trueBan, reason);
+
+            if (ok)
+            {
+                Snackbar.Add("Ban applied.", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(true));
+            }
+            else
+            {
+                Snackbar.Add("Failed to apply ban.", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await Submit();
+    }
+}

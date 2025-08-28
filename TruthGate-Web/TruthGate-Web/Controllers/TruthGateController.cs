@@ -4,6 +4,7 @@ using Microsoft.Extensions.Caching.Memory;
 using System.Globalization;
 using System.Text.Json;
 using TruthGate_Web.Endpoints;
+using TruthGate_Web.Middleware;
 using TruthGate_Web.Models;
 using TruthGate_Web.Models.ControllerResponses;
 using TruthGate_Web.Services;
@@ -11,6 +12,7 @@ using TruthGate_Web.Utils;
 
 namespace TruthGate_Web.Controllers
 {
+    [PublicLimited]
     [ApiController]
     [Route("api/truthgate/v1")]
     [AllowAnonymous]

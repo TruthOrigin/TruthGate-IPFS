@@ -1,0 +1,405 @@
+﻿@page "/ip-bans"
+@using Microsoft.EntityFrameworkCore
+@using System.Net
+@using TruthGate_Web.Components.Pages.Settings.Shared
+@using TruthGate_Web.Security
+@using TruthGate_Web.Security.Models
+@inject IRateLimiterService RateSvc
+@inject IDbContextFactory<RateLimiterDbContext> DbFactory
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+
+<MudPaper Class="p-4">
+
+    <MudTabs Rounded="true" Elevation="0">
+        <!-- BANS TAB -->
+        <MudTabPanel Text="Bans">
+            <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-4">
+
+                <MudTextField @bind-Value="_banFilters.IpFilter" Label="IP filter" Variant="Variant.Outlined" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" />
+                <MudTextField @bind-Value="_banFilters.PrefixFilter" Label="IPv6 /64 filter" Variant="Variant.Outlined" />
+                
+                    @if (_banFilters != null)
+                    {
+                    <MudSelect T="BanScopeFilter?" @bind-Value="_banFilters.Scope" Label="Scope" Variant="Variant.Outlined" Dense="true" Class="w-40">
+                        <MudSelectItem T="BanScopeFilter?" Value="@( (BanScopeFilter?)null )">(All)</MudSelectItem>
+                        <MudSelectItem T="BanScopeFilter?" Value="BanScopeFilter.Global">Global</MudSelectItem>
+                        <MudSelectItem T="BanScopeFilter?" Value="BanScopeFilter.Public">Public</MudSelectItem>
+                        <MudSelectItem T="BanScopeFilter?" Value="BanScopeFilter.Admin">Admin</MudSelectItem>
+                        <MudSelectItem T="BanScopeFilter?" Value="BanScopeFilter.Gateway">Gateway</MudSelectItem>
+                    </MudSelect>
+                    <MudSelect T="bool?" @bind-Value="_banFilters.TrueOnly" Label="True ban only?" Variant="Variant.Outlined" Dense="true" Class="w-40">
+                        <MudSelectItem T="bool?" Value="@( (bool?)null )">(All)</MudSelectItem>
+                        <MudSelectItem T="bool?" Value="true">Yes</MudSelectItem>
+                        <MudSelectItem T="bool?" Value="false">No</MudSelectItem>
+                    </MudSelect>
+                    }
+                <MudDateRangePicker @bind-DateRange="_banFilters.Range" Label="Created range (UTC)" Variant="Variant.Outlined" />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="@ReloadBans">Apply</MudButton>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary" OnClick="@OpenSearchDialog"><MudIcon Icon="@Icons.Material.Filled.FindInPage" />&nbsp;Search IP</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Error" OnClick="@OpenAddBanDialog"><MudIcon Icon="@Icons.Material.Filled.Gavel" />&nbsp;Add Ban</MudButton>
+            </MudStack>
+
+            <!-- Bans DataGrid -->
+            <MudDataGrid T="BanDto"
+                         ServerData="LoadBansGridAsync"
+                         @ref="_bansGrid"
+                         Hover="true"
+                         Dense="true"
+                         Bordered="true"
+                         Sortable="false"
+                         Filterable="false"
+                         RowsPerPage="20">
+                <Columns>
+                    <TemplateColumn Title="Created (UTC)">
+                        <CellTemplate>
+                            @context.Item.CreatedUtc.ToString("u")
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Expires (UTC)">
+                        <CellTemplate>
+                            @context.Item.ExpiresUtc.ToString("u")
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.Scope" Title="Scope" />
+                    <TemplateColumn Title="Type">
+                        <CellTemplate>
+                            @(context.Item.IsTrueBan ? "TRUE" : "Soft")
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.Ip" Title="IP" />
+                    <PropertyColumn Property="x => x.Ipv6Prefix" Title="IPv6 /64" />
+                    <PropertyColumn Property="x => x.ReasonCode" Title="Reason" />
+                    <TemplateColumn Title="Actions">
+                        <CellTemplate>
+                            <MudMenu Dense="true" EndIcon="@Icons.Material.Filled.MoreVert">
+                                <MudMenuItem OnClick="@(()=>ConfirmUnbanById(context.Item.Id))">Unban (by Id)</MudMenuItem>
+                                @if (!string.IsNullOrWhiteSpace(context.Item.Ip))
+                                {
+                                    <MudMenuItem OnClick="@(()=>ConfirmUnbanIp(context.Item.Ip!))">Unban IP</MudMenuItem>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(context.Item.Ipv6Prefix))
+                                {
+                                    <MudMenuItem OnClick="@(()=>ConfirmUnbanPrefix(context.Item.Ipv6Prefix!))">Unban /64 Prefix</MudMenuItem>
+                                }
+                            </MudMenu>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="BanDto" PageSizeOptions="new int[] { 10, 20, 50 }" />
+                </PagerContent>
+            </MudDataGrid>
+        </MudTabPanel>
+
+        <!-- WHITELIST TAB -->
+        <MudTabPanel Text="Whitelist">
+            <MudTabs Rounded="true" Elevation="0">
+                <!-- IP WHITELIST -->
+                <MudTabPanel Text="IP Addresses">
+                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudTextField @bind-Value="_wlIpSearch" Label="Search IP" Variant="Variant.Outlined" />
+                        <MudButton OnClick="@ReloadWhitelistIp" Variant="Variant.Filled" Color="Color.Primary">Search</MudButton>
+                        <MudSpacer />
+                        <MudTextField @bind-Value="_newWhitelistIp" Label="Add IP" Variant="Variant.Outlined" />
+                        <MudTextField @bind-Value="_newWhitelistReason" Label="Reason" Variant="Variant.Outlined" />
+                        <MudNumericField T="int?" @bind-Value="_newWhitelistExpireHours" Label="Expires in (hours)" Variant="Variant.Outlined" Min="1" />
+                        <MudButton OnClick="@AddWhitelistIp" Color="Color.Success" Variant="Variant.Filled"><MudIcon Icon="@Icons.Material.Filled.PlaylistAdd" />&nbsp;Add</MudButton>
+                    </MudStack>
+
+                    <MudDataGrid T="Whitelist"
+                                 ServerData="LoadWhitelistIpGridAsync"
+                                 @ref="_wlIpGrid"
+                                 Hover="true"
+                                 Dense="true"
+                                 Bordered="true"
+                                 Sortable="false"
+                                 Filterable="false"
+                                 RowsPerPage="20">
+                        <Columns>
+                            <PropertyColumn Property="x => x.Ip" Title="IP" />
+                            <PropertyColumn Property="x => x.Reason" Title="Reason" />
+                            <TemplateColumn Title="Auto">
+                                <CellTemplate>@(context.Item.Auto ? "Yes" : "No")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Created (UTC)">
+                                <CellTemplate>@context.Item.CreatedUtc.ToString("u")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Expires (UTC)">
+                                <CellTemplate>@(context.Item.ExpiresUtc?.ToString("u") ?? "—")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Actions">
+                                <CellTemplate>
+                                    <MudButton Color="Color.Error" Variant="Variant.Outlined" Size="Size.Small"
+                                               OnClick="@(()=>RemoveWhitelistIp(context.Item.Ip!))">Remove</MudButton>
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <PagerContent>
+                            <MudDataGridPager T="Whitelist" PageSizeOptions="new int[] { 10, 20, 50 }" />
+                        </PagerContent>
+                    </MudDataGrid>
+                </MudTabPanel>
+
+                <!-- IPv6 PREFIX WHITELIST -->
+                <MudTabPanel Text="IPv6 /64 Prefixes">
+                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-3">
+                        <MudTextField @bind-Value="_wlPfxSearch" Label="Search Prefix" Variant="Variant.Outlined" />
+                        <MudButton OnClick="@ReloadWhitelistPfx" Variant="Variant.Filled" Color="Color.Primary">Search</MudButton>
+                        <MudSpacer />
+                        <MudTextField @bind-Value="_newWhitelistPfx" Label="Add Prefix (…/64)" Variant="Variant.Outlined" />
+                        <MudTextField @bind-Value="_newWhitelistReasonPfx" Label="Reason" Variant="Variant.Outlined" />
+                        <MudNumericField T="int?" @bind-Value="_newWhitelistExpireHoursPfx" Label="Expires in (hours)" Variant="Variant.Outlined" Min="1" />
+                        <MudButton OnClick="@AddWhitelistPrefix" Color="Color.Success" Variant="Variant.Filled"><MudIcon Icon="@Icons.Material.Filled.PlaylistAdd" />&nbsp;Add</MudButton>
+                    </MudStack>
+
+                    <MudDataGrid T="Whitelist"
+                                 ServerData="LoadWhitelistPrefixGridAsync"
+                                 @ref="_wlPfxGrid"
+                                 Hover="true"
+                                 Dense="true"
+                                 Bordered="true"
+                                 Sortable="false"
+                                 Filterable="false"
+                                 RowsPerPage="20">
+                        <Columns>
+                            <PropertyColumn Property="x => x.Ipv6Prefix" Title="IPv6 /64" />
+                            <PropertyColumn Property="x => x.Reason" Title="Reason" />
+                            <TemplateColumn Title="Auto">
+                                <CellTemplate>@(context.Item.Auto ? "Yes" : "No")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Created (UTC)">
+                                <CellTemplate>@context.Item.CreatedUtc.ToString("u")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Expires (UTC)">
+                                <CellTemplate>@(context.Item.ExpiresUtc?.ToString("u") ?? "—")</CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Actions">
+                                <CellTemplate>
+                                    <MudButton Color="Color.Error" Variant="Variant.Outlined" Size="Size.Small"
+                                               OnClick="@(()=>RemoveWhitelistPrefix(context.Item.Ipv6Prefix!))">Remove</MudButton>
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <PagerContent>
+                            <MudDataGridPager T="Whitelist" PageSizeOptions="new int[] { 10, 20, 50 }" />
+                        </PagerContent>
+                    </MudDataGrid>
+                </MudTabPanel>
+            </MudTabs>
+        </MudTabPanel>
+    </MudTabs>
+
+</MudPaper>
+
+
+@code {
+    // -------------------- BANS --------------------
+    private MudDataGrid<BanDto>? _bansGrid;
+
+    private class BanFilters
+    {
+        public string? IpFilter { get; set; }
+        public string? PrefixFilter { get; set; }
+        public BanScopeFilter? Scope { get; set; }
+        public bool? TrueOnly { get; set; }
+        public DateRange? Range { get; set; }
+    }
+    private BanFilters _banFilters = new();
+
+    private async Task<GridData<BanDto>> LoadBansGridAsync(GridState<BanDto> state)
+    {
+        var page = state.Page + 1;          // Mud uses 0-based; your API is 1-based
+        var pageSize = state.PageSize;
+
+        DateTimeOffset? from = _banFilters.Range?.Start;
+        DateTimeOffset? to = _banFilters.Range?.End;
+
+        var (items, total) = await RateSvc.GetBansAsync(
+            page, pageSize,
+            ipFilter: string.IsNullOrWhiteSpace(_banFilters.IpFilter) ? null : _banFilters.IpFilter!.Trim(),
+            ipv6PrefixFilter: string.IsNullOrWhiteSpace(_banFilters.PrefixFilter) ? null : _banFilters.PrefixFilter!.Trim(),
+            scope: _banFilters.Scope,
+            isTrueBan: _banFilters.TrueOnly,
+            createdFrom: from,
+            createdTo: to
+        );
+
+        return new GridData<BanDto> { Items = items, TotalItems = total };
+    }
+
+    private Task ReloadBans() => _bansGrid?.ReloadServerData() ?? Task.CompletedTask;
+
+    private async Task ConfirmUnbanById(Guid id)
+    {
+        var res = await Dialogs.ShowMessageBox("Confirm", "Unban this entry?", yesText: "Unban", cancelText: "Cancel");
+        if (res == true)
+        {
+            var ok = await RateSvc.UnbanByIdAsync(id);
+            Snackbar.Add(ok ? "Unbanned (by Id)." : "Nothing to unban.", ok ? Severity.Success : Severity.Info);
+            await ReloadBans();
+        }
+    }
+
+    private async Task ConfirmUnbanIp(string ip)
+    {
+        var res = await Dialogs.ShowMessageBox("Confirm", $"Unban IP {ip} ?", yesText: "Unban", cancelText: "Cancel");
+        if (res == true)
+        {
+            var ok = await RateSvc.UnbanIpAsync(ip);
+            Snackbar.Add(ok ? $"Unbanned IP {ip}." : "Not found.", ok ? Severity.Success : Severity.Info);
+            await ReloadBans();
+        }
+    }
+
+    private async Task ConfirmUnbanPrefix(string pfx)
+    {
+        var res = await Dialogs.ShowMessageBox("Confirm", $"Unban prefix {pfx} ?", yesText: "Unban", cancelText: "Cancel");
+        if (res == true)
+        {
+            var ok = await RateSvc.UnbanIpv6PrefixAsync(pfx);
+            Snackbar.Add(ok ? $"Unbanned prefix {pfx}." : "Not found.", ok ? Severity.Success : Severity.Info);
+            await ReloadBans();
+        }
+    }
+
+    // -------------------- SEARCH DIALOG --------------------
+    private async Task OpenSearchDialog()
+    {
+        var parameters = new DialogParameters<SearchDialogCtx> { { x => x.InitialIp, _banFilters.IpFilter } };
+        await Dialogs.Show<SearchIpDialog>("Search IP", parameters, new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small }).Result;
+    }
+
+    // -------------------- ADD BAN DIALOG --------------------
+    private async Task OpenAddBanDialog()
+    {
+        await Dialogs.Show<AddBanDialog>("Add Ban", new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Small }).Result;
+        await ReloadBans();
+    }
+
+    // -------------------- WHITELIST: IPs --------------------
+    private MudDataGrid<Whitelist>? _wlIpGrid;
+    private string? _wlIpSearch;
+    private string? _newWhitelistIp;
+    private string? _newWhitelistReason;
+    private int? _newWhitelistExpireHours;
+
+    private async Task<GridData<Whitelist>> LoadWhitelistIpGridAsync(GridState<Whitelist> state)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var q = db.Whitelists.AsNoTracking().Where(x => x.Ip != null);
+
+        if (!string.IsNullOrWhiteSpace(_wlIpSearch))
+        {
+            var s = _wlIpSearch.Trim();
+            q = q.Where(x => x.Ip!.Contains(s));
+        }
+
+        var total = await q.CountAsync();
+        var items = await q
+            .OrderByDescending(x => x.CreatedUtc)
+            .Skip(state.Page * state.PageSize)
+            .Take(state.PageSize)
+            .ToListAsync();
+
+        return new GridData<Whitelist> { Items = items, TotalItems = total };
+    }
+
+    private Task ReloadWhitelistIp() => _wlIpGrid?.ReloadServerData() ?? Task.CompletedTask;
+
+    private async Task AddWhitelistIp()
+    {
+        var ip = _newWhitelistIp?.Trim();
+        if (string.IsNullOrWhiteSpace(ip))
+        {
+            Snackbar.Add("Enter an IP to whitelist.", Severity.Warning);
+            return;
+        }
+        DateTimeOffset? exp = null;
+        if (_newWhitelistExpireHours is int h && h > 0) exp = DateTimeOffset.UtcNow.AddHours(h);
+
+        var ok = await RateSvc.AddWhitelistIpAsync(ip, _newWhitelistReason, exp, auto: false);
+        Snackbar.Add(ok ? $"Whitelisted {ip}." : "Failed to whitelist.", ok ? Severity.Success : Severity.Error);
+        _newWhitelistIp = _newWhitelistReason = null; _newWhitelistExpireHours = null;
+        await ReloadWhitelistIp();
+    }
+
+    private async Task RemoveWhitelistIp(string ip)
+    {
+        var res = await Dialogs.ShowMessageBox("Confirm", $"Remove {ip} from whitelist?", yesText: "Remove", cancelText: "Cancel");
+        if (res == true)
+        {
+            var ok = await RateSvc.RemoveWhitelistIpAsync(ip);
+            Snackbar.Add(ok ? "Removed from whitelist." : "Not found.", ok ? Severity.Success : Severity.Info);
+            await ReloadWhitelistIp();
+        }
+    }
+
+    // -------------------- WHITELIST: IPv6 /64 prefixes --------------------
+    private MudDataGrid<Whitelist>? _wlPfxGrid;
+    private string? _wlPfxSearch;
+    private string? _newWhitelistPfx;
+    private string? _newWhitelistReasonPfx;
+    private int? _newWhitelistExpireHoursPfx;
+
+    private async Task<GridData<Whitelist>> LoadWhitelistPrefixGridAsync(GridState<Whitelist> state)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var q = db.Whitelists.AsNoTracking().Where(x => x.Ipv6Prefix != null);
+
+        if (!string.IsNullOrWhiteSpace(_wlPfxSearch))
+        {
+            var s = _wlPfxSearch.Trim();
+            q = q.Where(x => x.Ipv6Prefix!.Contains(s));
+        }
+
+        var total = await q.CountAsync();
+        var items = await q
+            .OrderByDescending(x => x.CreatedUtc)
+            .Skip(state.Page * state.PageSize)
+            .Take(state.PageSize)
+            .ToListAsync();
+
+        return new GridData<Whitelist> { Items = items, TotalItems = total };
+    }
+
+    private Task ReloadWhitelistPfx() => _wlPfxGrid?.ReloadServerData() ?? Task.CompletedTask;
+
+    private async Task AddWhitelistPrefix()
+    {
+        var pfx = _newWhitelistPfx?.Trim();
+        if (string.IsNullOrWhiteSpace(pfx))
+        {
+            Snackbar.Add("Enter an IPv6 /64 prefix to whitelist.", Severity.Warning);
+            return;
+        }
+        DateTimeOffset? exp = null;
+        if (_newWhitelistExpireHoursPfx is int h && h > 0) exp = DateTimeOffset.UtcNow.AddHours(h);
+
+        var ok = await RateSvc.AddWhitelistIpv6PrefixAsync(pfx, _newWhitelistReasonPfx, exp, auto: false);
+        Snackbar.Add(ok ? $"Whitelisted prefix {pfx}." : "Failed to whitelist prefix.", ok ? Severity.Success : Severity.Error);
+        _newWhitelistPfx = _newWhitelistReasonPfx = null; _newWhitelistExpireHoursPfx = null;
+        await ReloadWhitelistPfx();
+    }
+
+    private async Task RemoveWhitelistPrefix(string pfx)
+    {
+        var res = await Dialogs.ShowMessageBox("Confirm", $"Remove {pfx} from whitelist?", yesText: "Remove", cancelText: "Cancel");
+        if (res == true)
+        {
+            var ok = await RateSvc.RemoveWhitelistIpv6PrefixAsync(pfx);
+            Snackbar.Add(ok ? "Removed from whitelist." : "Not found.", ok ? Severity.Success : Severity.Info);
+            await ReloadWhitelistPfx();
+        }
+    }
+
+    // -------------------- DIALOG COMPONENTS --------------------
+    public class SearchDialogCtx
+    {
+        public string? InitialIp { get; set; }
+    }
+
+    // SearchDialog and AddBanDialog stay the same except numeric fields now use T="int" / T="int?"
+}

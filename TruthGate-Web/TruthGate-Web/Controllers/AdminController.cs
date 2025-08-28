@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Net.Http.Headers;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using TruthGate_Web.Middleware;
 
 namespace TruthGate_Web.Controllers
 {
@@ -28,6 +29,7 @@ namespace TruthGate_Web.Controllers
         public void OnResourceExecuted(ResourceExecutedContext context) { }
     }
 
+    [AdminProtected]
     [ApiController]
     [Route("api/truthgate/v1/admin")]
     [ServiceFilter(typeof(AdminApiKeyOnlyFilter))]
