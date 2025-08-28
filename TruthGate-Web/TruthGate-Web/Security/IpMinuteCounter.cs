@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Reflection.Emit;
@@ -111,6 +112,46 @@ namespace TruthGate_Web.Security
             b.Entity<IpMinuteCounter>().HasIndex(x => x.MinuteBucket);
             b.Entity<IpMinuteCounter>().HasIndex(x => new { x.Ip, x.Scope });
             b.Entity<Ban>().HasIndex(x => new { x.Ip, x.IpV6Prefix, x.Scope, x.Type });
+
+            var dtoMs = new ValueConverter<DateTimeOffset, long>(
+       v => v.ToUnixTimeMilliseconds(),
+       v => DateTimeOffset.FromUnixTimeMilliseconds(v));
+
+            var dtoMsNullable = new ValueConverter<DateTimeOffset?, long?>(
+                v => v.HasValue ? v.Value.ToUnixTimeMilliseconds() : (long?)null,
+                v => v.HasValue ? DateTimeOffset.FromUnixTimeMilliseconds(v.Value) : (DateTimeOffset?)null);
+
+            // Bans
+            b.Entity<Ban>()
+                .Property(x => x.CreatedUtc)
+                .HasConversion(dtoMs)
+                .HasColumnType("INTEGER");
+            b.Entity<Ban>()
+                .Property(x => x.ExpiresUtc)
+                .HasConversion(dtoMs)
+                .HasColumnType("INTEGER");
+
+            // Whitelist
+            b.Entity<Whitelist>()
+                .Property(x => x.CreatedUtc)
+                .HasConversion(dtoMs)
+                .HasColumnType("INTEGER");
+            b.Entity<Whitelist>()
+                .Property(x => x.ExpiresUtc)
+                .HasConversion(dtoMsNullable)
+                .HasColumnType("INTEGER");
+
+            // TLS churn
+            b.Entity<TlsChurnMetric>()
+                .Property(x => x.WindowStartUtc)
+                .HasConversion(dtoMs)
+                .HasColumnType("INTEGER");
+
+            // Admin log
+            b.Entity<AdminAuditLog>()
+                .Property(x => x.TsUtc)
+                .HasConversion(dtoMs)
+                .HasColumnType("INTEGER");
         }
     }
 }

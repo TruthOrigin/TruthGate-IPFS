@@ -10,7 +10,10 @@
 @inject ISnackbar Snackbar
 @rendermode InteractiveServer
 
-<MudPaper Class="p-4">
+<MudContainer Class="py-4" MaxWidth="MaxWidth.Large">
+
+     <MudText Typo="Typo.h4" Class="mb-2">Settings</MudText>
+     <br />
 
     <MudTabs Rounded="true" Elevation="0">
         <!-- BANS TAB -->
@@ -192,8 +195,8 @@
         </MudTabPanel>
     </MudTabs>
 
-</MudPaper>
 
+</MudContainer>
 
 @code {
     // -------------------- BANS --------------------

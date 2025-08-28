@@ -74,7 +74,7 @@
     private bool _usePrefix;
     private string? _target;
     private RateScope _scope;
-    private bool _trueBan;
+    private bool _trueBan {get;set;} = true;
     private int _durationMinutes;
     private string _reason = "MANUAL_BAN";
     private string? _error;

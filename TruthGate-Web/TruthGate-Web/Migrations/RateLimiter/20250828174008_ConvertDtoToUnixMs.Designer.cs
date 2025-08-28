@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TruthGate_Web.Security;
 
@@ -10,9 +11,11 @@ using TruthGate_Web.Security;
 namespace TruthGate_Web.Migrations.RateLimiter
 {
     [DbContext(typeof(RateLimiterDbContext))]
-    partial class RateLimiterDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250828174008_ConvertDtoToUnixMs")]
+    partial class ConvertDtoToUnixMs
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.8");
