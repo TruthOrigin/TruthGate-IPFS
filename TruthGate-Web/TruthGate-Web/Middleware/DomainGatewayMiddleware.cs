@@ -40,7 +40,7 @@ namespace TruthGate_Web.Middleware
 
             // keep /api and /auth exceptions
             var p = (ctx.Request.Path.Value ?? "").ToLowerInvariant();
-            if (p.StartsWith("/api") || p.StartsWith("/auth")
+            if (p.StartsWith("/api", StringComparison.OrdinalIgnoreCase) || p.StartsWith("/auth")
                 || p.StartsWith("/.well-known") || p.StartsWith("/_acme"))
             {
                 await next();
