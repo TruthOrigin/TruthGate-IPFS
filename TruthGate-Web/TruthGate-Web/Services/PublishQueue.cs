@@ -126,6 +126,13 @@ namespace TruthGate_Web.Services
             // Publish pointer to the TGP bundle
             await IpfsAdmin.NamePublishAsync(name, tgpCid, _http, _keys);
 
+            await EnsureIpnsKeyFileAndRepublishIfNeededAsync(
+    siteTarget,
+    tgpFolder,
+    name,
+    id, 
+    ct);
+
             // 7) Persist metadata (real UpdateAsync mutation)
             await _config.UpdateAsync(cfg =>
             {
@@ -205,6 +212,85 @@ namespace TruthGate_Web.Services
                         }
                     }
                 }
+            }
+
+            async Task<string?> TryReadIpnsKeyAsync(string keyMfsPath, CancellationToken ct2)
+            {
+                // files/read returns 200 only if file exists
+                var rest = $"/api/v0/files/read?arg={Uri.EscapeDataString(IpfsGateway.NormalizeMfs(keyMfsPath))}";
+                using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys, ct: ct2);
+                if (!res.IsSuccessStatusCode) return null;
+
+                var txt = await res.Content.ReadAsStringAsync();
+
+                // Try JSON first: { "IpnsKey": "k51q..." }
+                try
+                {
+                    var obj = JsonSerializer.Deserialize<IpnsSiteKey>(txt);
+                    if (!string.IsNullOrWhiteSpace(obj?.IpnsKey))
+                        return obj!.IpnsKey.Trim();
+                }
+                catch { /* ignore and fall back */ }
+
+                // Fallback: treat content as plain text value
+                return txt.Trim().Trim('"');
+            }
+
+            async Task UnpinRecursiveIfPossibleAsync(string cid, CancellationToken ct2)
+            {
+                if (string.IsNullOrWhiteSpace(cid)) return;
+                try
+                {
+                    var rest = $"/api/v0/pin/rm?arg={Uri.EscapeDataString(cid)}&recursive=true";
+                    using var res = await ApiProxyEndpoints.SendProxyApiRequest(rest, _http, _keys, ct: ct2);
+                    // ok if it wasn't pinned; we don't throw on non-success
+                }
+                catch
+                {
+                    // best-effort
+                }
+            }
+
+            async Task EnsureIpnsKeyFileAndRepublishIfNeededAsync(
+                string siteFolderMfs,               // e.g. /production/sites/{leaf}
+                string tgpFolderMfs,                // e.g. /production/pinned/{tgpLeaf}
+                string ipnsKeyNameForPublish,       // 'name' from EnsureKeyAsync
+                string currentPeerId,               // 'id' from EnsureKeyAsync
+                CancellationToken ct2)
+            {
+                var keyPath = $"{siteFolderMfs}/ipns-key.json";
+
+                var existing = await TryReadIpnsKeyAsync(keyPath, ct2);
+                if (string.Equals(existing, currentPeerId, StringComparison.OrdinalIgnoreCase))
+                    return; // all good
+
+                // Need to add/overwrite ipns-key.json, so: unpin current site CID, write, re-pin, and update TGP + IPNS.
+
+                var oldSiteCid = await IpfsAdmin.FilesStatHashAsync(siteFolderMfs, _http, _keys, ct2);
+                if (!string.IsNullOrWhiteSpace(oldSiteCid))
+                    await UnpinRecursiveIfPossibleAsync(oldSiteCid!, ct2);
+
+                var payload = JsonSerializer.Serialize(new IpnsSiteKey { IpnsKey = currentPeerId });
+                await using (var msKey = new MemoryStream(Encoding.UTF8.GetBytes(payload)))
+                    await IpfsAdmin.FilesWriteAsync(keyPath, msKey, _http, _keys, "application/json", ct2);
+
+                // new site CID after adding the file
+                var newSiteCid = await IpfsAdmin.FilesStatHashAsync(siteFolderMfs, _http, _keys, ct2)
+                    ?? throw new InvalidOperationException("files/stat failed after writing ipns-key.json.");
+
+                await PinRecursiveAsync(newSiteCid, ct2);
+
+                // Rewrite TGP's tgp.json to reference the NEW site CID, pin, and republish IPNS.
+                var newTgpJson = TgpTemplates.TgpJson(newSiteCid);
+                await using (var msTgp = new MemoryStream(Encoding.UTF8.GetBytes(newTgpJson)))
+                    await IpfsAdmin.FilesWriteAsync($"{tgpFolderMfs}/tgp.json", msTgp, _http, _keys, "application/json", ct2);
+
+                var updatedTgpCid = await IpfsAdmin.FilesStatHashAsync(tgpFolderMfs, _http, _keys, ct2)
+                    ?? throw new InvalidOperationException("TGP folder stat failed after ipns-key write.");
+                await PinRecursiveAsync(updatedTgpCid, ct2);
+
+                // Republish IPNS to point to updated TGP
+                await IpfsAdmin.NamePublishAsync(ipnsKeyNameForPublish, updatedTgpCid, _http, _keys);
             }
 
             static async Task<JsonElement?> ReadJsonAsync(HttpResponseMessage res)

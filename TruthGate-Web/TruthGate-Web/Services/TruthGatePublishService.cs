@@ -257,6 +257,8 @@ namespace TruthGate_Web.Services
                 // Clean up raw folder (best-effort)
                 await SafeRmAsync(rawRoot, recursive: true, ct);
 
+                await AddIpnsKeyIfKnownAsync(stagingRoot, ed.IpnsPeerId, ct);
+
                 // Enqueue publish job (finalized stagingRoot)
                 var job = new PublishJob(
                     Domain: ed.Domain,
@@ -295,7 +297,6 @@ namespace TruthGate_Web.Services
             try { await IpfsAdmin.FilesRmIfExistsAsync(mfsPath, _http, _keys, recursive, ct); }
             catch
             {
-                /* best-effort */
             }
         }
 
@@ -382,6 +383,8 @@ namespace TruthGate_Web.Services
                     throw new InvalidOperationException($"Path traversal not allowed for '{it.Rel}'. {ex.Message}");
                 }
             }
+
+            await AddIpnsKeyIfKnownAsync(stagingRoot, ed.IpnsPeerId, ct);
 
             // 3) Enqueue publish job
             var job = new PublishJob(
@@ -543,6 +546,17 @@ namespace TruthGate_Web.Services
             }
 
             return (b.Domain, importName, id);
+        }
+
+        private async Task AddIpnsKeyIfKnownAsync(string mfsFolder, string? ipnsPeerId, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(ipnsPeerId)) return;
+
+            var keyPath = IpfsGateway.NormalizeMfs($"{mfsFolder}/ipns-key.json");
+            var payload = JsonSerializer.Serialize(new IpnsSiteKey { IpnsKey = ipnsPeerId });
+
+            await using var ms = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+            await IpfsAdmin.FilesWriteAsync(keyPath, ms, _http, _keys, "application/json", ct);
         }
 
         // ----- domain backup record (copied) -----
