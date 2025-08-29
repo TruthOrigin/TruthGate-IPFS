@@ -90,7 +90,7 @@ namespace TruthGate_Web.Services
             _ = await IpfsGateway.EnsureMfsFolderExistsAsync(tgpFolder, _http);
 
             // tgp.json
-            var tgpJson = TgpTemplates.TgpJson(finalSiteCid);
+            var tgpJson = TgpTemplates.TgpJson(finalSiteCid, job.Domain);
             await using (var ms = new MemoryStream(Encoding.UTF8.GetBytes(tgpJson)))
                 await IpfsAdmin.FilesWriteAsync($"{tgpFolder}/tgp.json", ms, _http, _keys, "application/json", ct);
 
@@ -131,6 +131,7 @@ namespace TruthGate_Web.Services
     tgpFolder,
     name,
     id, 
+    job.Domain,
     ct);
 
             // 7) Persist metadata (real UpdateAsync mutation)
@@ -256,6 +257,7 @@ namespace TruthGate_Web.Services
                 string tgpFolderMfs,                // e.g. /production/pinned/{tgpLeaf}
                 string ipnsKeyNameForPublish,       // 'name' from EnsureKeyAsync
                 string currentPeerId,               // 'id' from EnsureKeyAsync
+                string domainName,
                 CancellationToken ct2)
             {
                 var keyPath = $"{siteFolderMfs}/ipns-key.json";
@@ -281,7 +283,7 @@ namespace TruthGate_Web.Services
                 await PinRecursiveAsync(newSiteCid, ct2);
 
                 // Rewrite TGP's tgp.json to reference the NEW site CID, pin, and republish IPNS.
-                var newTgpJson = TgpTemplates.TgpJson(newSiteCid);
+                var newTgpJson = TgpTemplates.TgpJson(newSiteCid, domainName);
                 await using (var msTgp = new MemoryStream(Encoding.UTF8.GetBytes(newTgpJson)))
                     await IpfsAdmin.FilesWriteAsync($"{tgpFolderMfs}/tgp.json", msTgp, _http, _keys, "application/json", ct2);
 

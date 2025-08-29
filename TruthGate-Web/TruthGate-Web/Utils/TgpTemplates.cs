@@ -173,12 +173,13 @@ function ipfsDetected() {{
 
 
 
-        public static string TgpJson(string currentCid) =>
+        public static string TgpJson(string currentCid, string _domainName) =>
             JsonSerializer.Serialize(new
             {
                 tgp = 1,
                 ts = DateTimeOffset.UtcNow.ToString("o"),
                 current = currentCid,
+                domainName = _domainName,
                 legal = "/legal.md"
             }, new JsonSerializerOptions { WriteIndented = true });
 
