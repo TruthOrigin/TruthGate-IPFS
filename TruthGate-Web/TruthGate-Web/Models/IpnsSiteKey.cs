@@ -1,10 +1,11 @@
 ﻿using Newtonsoft.Json;
+using System.Text.Json.Serialization;
 
 namespace TruthGate_Web.Models
 {
     public class IpnsSiteKey
     {
-        [JsonProperty("IpnsKey")]
+        [JsonPropertyName("IpnsKey")]
         public string IpnsKey { get; set; }
     }
 }
